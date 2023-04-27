@@ -1,0 +1,170 @@
+---
+title: "scMRD_oncoprint"
+author: "TR"
+date: "2023-04-27"
+output: html_document
+---
+
+```{r}
+
+setwd("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript")
+
+library(tidyverse)
+library(pals)
+library(ComplexHeatmap)
+library(readxl)
+
+```
+
+```{r}
+
+MRD_data<- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD_v2_oncoprint_covered.xlsx") %>% column_to_rownames(., var = "...1") %>% as.matrix()
+  MRD_data[is.na(MRD_data)] <- " "
+
+get_type_fun <- function(x) strsplit(x, ";")[[1]]
+
+sample_order<- colnames(MRD_data)
+multiplex<- c("MRD1", "MRD1","MRD1" ,"MRD1" ,"MRD1",
+              "MRD2", "MRD2","MRD2" ,"MRD2" ,"MRD2",
+              "MRD3", "MRD3","MRD3" ,"MRD3" ,"MRD3",
+              "MRD4", "MRD4","MRD4" ,"MRD4" ,"MRD4",
+              "MRD5", "MRD5","MRD5" ,"MRD5" ,"MRD5",
+              "MRD6", "MRD6","MRD6" ,"MRD6" ,"MRD6")
+
+NGS_MRD_status<- c("Positive", "Positive","Positive" ,"Negative" ,"Positive",
+                    "Positive", "Negative","Negative" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Negative",
+                    "Positive", "Positive","Negative" ,"Negative" ,"Negative",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive")
+
+MFC_MRD_status<- c("Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                    "Positive", "Negative","Negative" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                    "Positive", "Positive","Positive" ,"Positive" ,"Positive")
+
+scMRD_status<- c("Positive", "Positive","Positive" ,"Positive" ,"Positive",
+                 "Positive", "Negative","Negative" ,"Positive" ,"Negative",
+                 "Positive", "Positive","Negative" ,"Positive" ,"Positive",
+                 "Positive", "Positive","Positive" ,"Negative" ,"Negative",
+                 "Positive", "Positive","Positive" ,"Positive" ,"Negative",
+                 "Positive", "Negative","Positive" ,"Positive" ,"Negative")
+
+relapse<- c("Yes", "No","No" ,"No" ,"No", 
+            "Yes", "Yes","No" ,"Yes" ,"No", 
+            "Yes", "No","Yes" ,"No" ,"Yes", 
+            "Yes", "No","Yes" ,"Yes" ,"Yes", 
+            "Yes", "No","Yes" ,"Yes" ,"No", 
+            "Yes", "Yes","No" ,"Yes" ,"No") 
+
+post_HSCT<-c("No", "No","No" ,"Yes" ,"No", 
+            "No", "Yes","No" ,"No" ,"No", 
+            "No", "No","Yes" ,"No" ,"No", 
+            "Yes", "No","Yes" ,"No" ,"Yes", 
+            "No", "No","No" ,"No" ,"No", 
+            "No", "Yes","No" ,"No" ,"No") 
+
+cell_recovery<- c(556, 324,210 ,116 ,9, 
+                  1818, 388, 266, 149, 15,
+                  620, 550, 269, 216 , 95,
+                  1045, 301, 228, 151, 134,
+                  1084, 559, 519, 22, 21,
+                  1793, 593, 246, 109, 36)
+
+order_multiplex<-rbind(sample_order, multiplex) %>% 
+                 rbind(., NGS_MRD_status) %>%
+                 rbind(., MFC_MRD_status) %>%
+                 rbind(., relapse) %>%
+                 rbind(., post_HSCT) %>%
+                 rbind(., scMRD_status)
+
+```
+
+
+```{r}
+colors_NGS<- c("#003559","#82C0CC")
+colors_MFC<- c("#003559","#82C0CC")
+colors_scMRD<- c("#003559","#82C0CC")
+relapse<-c("#67000D" ,"#FCBBA1")
+colors_allo<-c("#67000D" ,"#FCBBA1")
+
+color_set <- list("Multiplex" = setNames(rev(alphabet(n=length(unique(as.character(order_multiplex[2,]))))),
+                                    c( "MRD1","MRD2","MRD3", "MRD4", "MRD5" ,"MRD6") ),
+                  "MRD Status (NGS)" = setNames(colors_NGS,
+                                    c("Positive","Negative")),
+                  "MRD Status (MFC)" = setNames(colors_MFC,
+                                    c("Positive","Negative")),
+                  "Relapse" = setNames(relapse,
+                                    c("Yes","No")),           
+                  "Post-allo HSCT" = setNames(colors_allo,
+                                    c("Yes","No")),
+                  "MRD Status (scMRD)" = setNames(colors_scMRD,
+                                    c("Positive","Negative")),
+                  
+                  "cbar" = c("Missense" = "#02010A", 
+                        "Frameshift" = "#B23A48", 
+                        "Nonsense" = "#3993DD",
+                       "Splice_site" = "darkorchid2", 
+                       "Inframe_indel" = "#2C5530", 
+                       "ITD" = "blue" , 
+                       "Deletion" = "green"  ))
+
+variant_type_colors = c("Missense" = "#02010A", 
+                        "Frameshift" = "#B23A48", 
+                        "Nonsense" = "#3993DD",
+                       "Splice_site" = "darkorchid2", 
+                       "Inframe_indel" = "#2C5530", 
+                       "ITD" = "blue" , 
+                       "Deletion" = "green"  )
+
+bar_colors<- c("#005C31", "#005C31", "#005C31", "#005C31", "#005C31", 
+               "#191919", "#191919", "#191919", "#191919", "#191919", 
+               "#4C005C", "#4C005C", "#4C005C", "#4C005C", "#4C005C", 
+               "#993F00", "#993F00", "#993F00", "#993F00", "#993F00", 
+               "#0075DC", "#0075DC", "#0075DC", "#0075DC", "#0075DC", 
+               "#F0A0FF", "#F0A0FF", "#F0A0FF", "#F0A0FF", "#F0A0FF")
+
+```
+
+```{r} 
+
+#png("MRD_v2_oncoprint", width = 210, height = 130, units='mm', res = 500)
+
+        oncoPrint(MRD_data, 
+            get_type = get_type_fun,
+            column_order = sample_order,
+            top_annotation = HeatmapAnnotation(
+              `No. Cells` =anno_barplot(cell_recovery, ylim = c(-10, 2000), axis = TRUE, add_numbers = FALSE, 
+                                     border = FALSE, height = unit(2, "cm"),
+                                     gp = gpar(fill = bar_colors)),
+              Multiplex = c(MRD1 = order_multiplex[2,1:5],
+                                                             MRD2 = order_multiplex[2,6:10], 
+                                                             MRD3 = order_multiplex[2,11:15],
+                                                             MRD4 = order_multiplex[2,16:20], 
+                                                             MRD5 = order_multiplex[2,21:25], 
+                                                             MRD6 = order_multiplex[2,26:30]), show_annotation_name = TRUE, 
+                                                `MRD Status (NGS)` = c(order_multiplex[3,]),
+                                                `MRD Status (MFC)` = c(order_multiplex[4,]),
+                                                `MRD Status (scMRD)` = c(order_multiplex[7,]),
+                                                `Post-allo HSCT` = c(order_multiplex[6,]),
+                                                `Relapse` = c(order_multiplex[5,]),
+
+              col = color_set, 
+              annotation_name_side = "left"),
+                alter_fun = list(
+              background = function(x, y, w, h) grid.rect(x, y, w*0.9, h*0.9, gp = gpar(fill = "gray97", col = NA)),
+                Missense = function(x, y, w, h) grid.rect(x, y, w*.9, h*.9, gp = gpar(fill = "#2892D7",lwd = 1 )),
+                Frameshift =function(x, y, w, h) grid.rect(x, y, w*.9, h*.9, gp = gpar(fill = "#DEC0F1", lwd = 1)),
+                Nonsense = function(x, y, w, h) grid.rect(x, y, w*.9, h*.9, gp = gpar(fill = "#1E1E24", lwd = 1)),
+                ITD = function(x, y, w, h) grid.rect(x, y, w*.9, h*.9, gp = gpar(fill = "#95190C",lwd = 1)),
+                Splice_site = function(x, y, w, h) grid.rect(x, y, w*.9, h*.9, gp = gpar(fill = "#CDFFF9", lwd = 1)),
+                col = c(Missense = "#2892D7", Frameshift = "#DEC0F1", Nonsense = "#1E1E24", 
+                        Splice_site = "#CDFFF9",ITD = "#95190C"  )))
+ 
+
+#dev.off()
+```
+
+
