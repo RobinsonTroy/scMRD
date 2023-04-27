@@ -1,0 +1,40 @@
+---
+title: "scMRD_fishplot"
+author: "TR"
+output: html_document
+---
+
+```{r}
+
+library(fishplot)
+library(tidyverse)
+
+```
+
+```{r}
+
+timepoints <- c(0,180,210,330)      
+
+
+#DNMT3A.R882H, NPM1c, DNMT3A.R736C, JAK2.V617F
+frac.table <- matrix(c(37, 25, 00, 00,
+                       35, 0.000000000000000001, 03, 00,
+                       39, 05, 04, 02,
+                       23, 11, 00, 00),
+                       ncol=length(timepoints))
+
+parents <- c(0,1,0,0)
+fish <- createFishObject(frac.table,parents,timepoints=timepoints)
+fish <- layoutClones(fish)
+
+
+#png("MRD5_S3_FISH.png",width=7,height=5,units="in",res=1200)
+
+      fishPlot(fish,shape="spline",title.btm="MRD5-S3",
+      cex.title=1, vlines=c(0,180, 210,300), 
+      cex.vlab = 1, col.border = "black",
+      border = 1,
+      vlab=c("Dx","MRD", "R1", "R2"))
+
+#dev.off()
+```
