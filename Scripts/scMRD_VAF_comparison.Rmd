@@ -7,8 +7,6 @@ output: html_document
 
 ```{r}
 
-setwd("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript")
-
 library(tidyverse)
 library(pals)
 library(readxl)
@@ -18,7 +16,7 @@ library(ggpubr)
 Read in VAF data
 ```{r}
 
-VAF_data <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD_v2_VAF_compare.xlsx")
+VAF_data <- read_xlsx("MRD_v2_VAF_compare.xlsx")
 
 ```
 

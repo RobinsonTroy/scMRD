@@ -7,8 +7,6 @@ output: html_document
 
 ```{r}
 
-setwd("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript")
-
 library(tidyverse)
 library(pals)
 library(ComplexHeatmap)
@@ -18,7 +16,7 @@ library(readxl)
 
 ```{r}
 
-MRD_data<- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD_v2_oncoprint_covered.xlsx") %>% column_to_rownames(., var = "...1") %>% as.matrix()
+MRD_data<- read_xlsx("MRD_v2_oncoprint_covered.xlsx") %>% column_to_rownames(., var = "...1") %>% as.matrix()
   MRD_data[is.na(MRD_data)] <- " "
 
 get_type_fun <- function(x) strsplit(x, ";")[[1]]
