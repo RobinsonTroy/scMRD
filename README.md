@@ -1,5 +1,5 @@
 # scMRD
 Processing multiplexed single cell MRD data in R
 
-Please note that all data necessary to run reproducible examples of the code used in this project are available under dbGAP study accession phs003233.v1.p1. 
+Please note that all necessary data (in the form of .h5 files) to run reproducible examples of the code used in this project are available under dbGAP study accession phs003233.v1.p1. 
 
