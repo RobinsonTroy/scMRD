@@ -1,0 +1,560 @@
+---
+title: "scMRD_decon_plots"
+author: "TR"
+date: "2023-04-30"
+output: html_document
+---
+
+
+The code in this file generates deconvolution plots included in Figures 3A-F and 6A. As you will see, samples are renamed based on the cell number recovered (S1 = highest #, S5 = lowest #). For samples that were post-allo-HSCT, donor and host identities were determined via referencing bulk NGS SNP profiles before the data were imported into this file. 
+```{r}
+
+library(tidyverse)
+library(pals)
+library(cowplot)
+library(readxl)
+
+```
+
+```{r}
+
+bubble_colors <- c("scMRD only" = "#EA3546", "Bulk only" = "black",  "scMRD + Bulk" = "#00A7E1", "Unexpected" = "white")
+bubble_shapes <- c("scMRD only" = 21, "Bulk only" = 23, "scMRD + Bulk" = 21, "Unexpected" = 21)
+
+```
+
+```{r}
+#C3 is host, C6 is donor
+
+MRD1_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_mutations.xlsx")
+MRD1_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_ncells_FINAL.csv") 
+
+MRD1_ncells$variable <- str_replace(MRD1_ncells$variable, "Cluster_", "Sample ")
+MRD1_ncells[nrow(MRD1_ncells) + 1,] = c("7", "Sample 3_6", 116)
+MRD1_ncells$value <- as.numeric(MRD1_ncells$value)
+
+MRD1_mutations$scVAF[MRD1_mutations$Detection == "Bulk"]<-1
+MRD1_mutations$Detection[MRD1_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD1_mutations$Detection[MRD1_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD1_mutations$Detection[MRD1_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD1_mutations$Mutations[MRD1_mutations$Mutations == "DNMT3A.592"]<- "DNMT3A.Y592*"
+MRD1_mutations$Mutations[MRD1_mutations$Mutations == "NPM1.287"]<- "NPM1.W288Cfs"
+
+
+MRD1_ncells %>% arrange(desc(value))
+MRD1_bubble_order<- c("Sample 2", "Sample 1", "Sample 4", "Sample 3_6", "Sample 5")
+
+gg_bubble_MRD1 <- ggplot(MRD1_mutations, aes(x = factor(Sample, levels = MRD1_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 2" = "S1", "Sample 1" = "S2", "Sample 4" = "S3",
+                                                      "Sample 3_6" = "S4", "Sample 5" = "S5"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+
+
+MRD1_ncells_plotting <- MRD1_ncells %>% dplyr::filter(!variable == "Sample 3_6")
+MRD1_ncells_plotting$Source <- ifelse(MRD1_ncells_plotting$variable == "Sample 3" | MRD1_ncells_plotting$variable == "Sample 6" , 0, MRD1_ncells_plotting$X)
+MRD1_ncell_order <- c("2", "1", "4", "0", "5")
+
+ gg_ncell_MRD1 <- ggplot(data = MRD1_ncells_plotting, aes(x = factor(Source,level = MRD1_ncell_order), 
+                                                          fill = factor(variable, levels = c("Sample 2", "Sample 1", "Sample 4","Sample 5", "Sample 6", "Sample 3")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                  scale_fill_manual(values =c("Sample 1" = "#9381FF", "Sample 2" = "#9381FF", "Sample 6" = "forestgreen", 
+                                              "Sample 3" = "#9381FF", "Sample 4" = "#9381FF", "Sample 5" = "#9381FF"))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,650), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD1")
+
+
+gg_MRD1_decon <- gg_ncell_MRD1 + plot_spacer() + gg_bubble_MRD1 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+#ggsave(plot = gg_MRD1_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD1_decon_plot.tiff", device = "tiff")
+
+```
+
+```{r}
+#C1 is host, C6 is donor
+
+MRD2_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD2_v2_mutations.xlsx")
+MRD2_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD2_v2_ncells_FINAL.csv")
+
+MRD2_ncells$variable <- str_replace(MRD2_ncells$variable, "Cluster_", "Sample ")
+MRD2_ncells[nrow(MRD2_ncells) + 1,] = c("7", "Sample 1_6", 388)
+MRD2_ncells$value <- as.numeric(MRD2_ncells$value)
+
+MRD2_mutations$scVAF[MRD2_mutations$Detection == "Bulk"]<-1
+MRD2_mutations$Detection[MRD2_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD2_mutations$Detection[MRD2_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD2_mutations$Detection[MRD2_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD2_mutations$Mutations[MRD2_mutations$Mutations == "RUNX1.143"]<- "RUNX1.E143Dfs"
+
+
+MRD2_ncells %>% arrange(desc(value))
+MRD2_bubble_order<- c("Sample 2", "Sample 1_6", "Sample 3", "Sample 5", "Sample 4")
+
+gg_bubble_MRD2 <- ggplot(MRD2_mutations, aes(x = factor(Sample, levels = MRD2_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 2" = "S1", "Sample 1_6" = "S2", "Sample 3" = "S3",
+                                                      "Sample 5" = "S4", "Sample 4" = "S5"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+
+MRD2_ncells_plotting <- MRD2_ncells %>% dplyr::filter(!variable == "Sample 1_6")
+MRD2_ncells_plotting$Source <- ifelse(MRD2_ncells_plotting$variable == "Sample 1" | MRD2_ncells_plotting$variable == "Sample 6" , 0, MRD2_ncells_plotting$X)
+MRD2_ncell_order <- c("2", "0", "3", "5", "4")
+
+ gg_ncell_MRD2 <- ggplot(data = MRD2_ncells_plotting, aes(x = factor(Source,level = MRD2_ncell_order), 
+                                                          fill = factor(variable, levels = c("Sample 2", "Sample 3", "Sample 4","Sample 5", "Sample 6", "Sample 1")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                  scale_fill_manual(values =c("Sample 1" = "#9381FF", "Sample 2" = "#9381FF", "Sample 6" = "forestgreen", 
+                                              "Sample 3" = "#9381FF", "Sample 4" = "#9381FF", "Sample 5" = "#9381FF"))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,2000), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD2")
+ 
+ gg_MRD2_decon <- gg_ncell_MRD2 + plot_spacer() + gg_bubble_MRD2 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+#ggsave(plot = gg_MRD2_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD2_decon_plot.tiff", device = "tiff")
+
+```
+
+```{r}
+#C5 is donor, C6 is host
+
+MRD3_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_mutations.xlsx")
+MRD3_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_ncells_FINAL.csv")
+
+
+MRD3_ncells$variable <- str_replace(MRD3_ncells$variable, "Cluster_", "Sample ")
+MRD3_ncells[nrow(MRD3_ncells) + 1,] = c("7", "Sample 5_6", 269)
+MRD3_ncells$value <- as.numeric(MRD3_ncells$value)
+
+MRD3_mutations$scVAF[MRD3_mutations$Detection == "Bulk"]<-1
+MRD3_mutations$Detection[MRD3_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD3_mutations$Detection[MRD3_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD3_mutations$Detection[MRD3_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD3_mutations$Mutations[MRD3_mutations$Mutations == "ASXL1.678"]<- "ASXL1.G680Rfs"
+MRD3_mutations$Mutations[MRD3_mutations$Mutations == "RUNX1.300"]<- "RUNX1.T300Nfs"
+MRD3_mutations$Mutations[MRD3_mutations$Mutations == "WT1.369"]<- "WT1.R369Afs"
+
+MRD3_ncells %>% arrange(desc(value))
+MRD3_bubble_order<- c("Sample 1", "Sample 2", "Sample 5_6", "Sample 3", "Sample 4")
+
+gg_bubble_MRD3 <- ggplot(MRD3_mutations, aes(x = factor(Sample, levels = MRD3_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 1" = "S1", "Sample 2" = "S2", "Sample 5_6" = "S3",
+                                                      "Sample 3" = "S4", "Sample 4" = "S5"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+MRD3_ncells_plotting <- MRD3_ncells %>% dplyr::filter(!variable == "Sample 5_6")
+MRD3_ncells_plotting$Source <- ifelse(MRD3_ncells_plotting$variable == "Sample 5" | MRD3_ncells_plotting$variable == "Sample 6" , 0, MRD3_ncells_plotting$X)
+MRD3_ncell_order <- c("1", "2", "0", "3", "4")
+
+ gg_ncell_MRD3 <- ggplot(data = MRD3_ncells_plotting, aes(x = factor(Source,level = MRD3_ncell_order), 
+                                                          fill = factor(variable, levels = c("Sample 1", "Sample 2", "Sample 3","Sample 4", "Sample 5", "Sample 6")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  scale_fill_manual(values =c("Sample 1" = "#9381FF", "Sample 2" = "#9381FF", "Sample 5" = "forestgreen", 
+                                              "Sample 3" = "#9381FF", "Sample 4" = "#9381FF", "Sample 6" = "#9381FF"))+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,700), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD3")
+
+ 
+gg_MRD3_decon <- gg_ncell_MRD3 + plot_spacer() + gg_bubble_MRD3 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+#ggsave(plot = gg_MRD3_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD3_decon_plot.tiff", device = "tiff")
+
+```
+
+
+```{r}
+#C2 is donor, C8 is host
+#C3 is donor, C4 is host
+#C5 is donor, C6 is host
+
+MRD4_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_mutations.xlsx")
+MRD4_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_ncells_FINAL.csv")
+
+MRD4_ncells$variable <- str_replace(MRD4_ncells$variable, "Cluster_", "Sample ")
+MRD4_ncells[nrow(MRD4_ncells) + 1,] = c("7", "Sample 2_8", 1045)
+MRD4_ncells[nrow(MRD4_ncells) + 1,] = c("8", "Sample 3_4", 134)
+MRD4_ncells[nrow(MRD4_ncells) + 1,] = c("9", "Sample 5_6", 228)
+MRD4_ncells$value <- as.numeric(MRD4_ncells$value)
+
+MRD4_mutations$scVAF[MRD4_mutations$Detection == "Bulk"]<-1
+MRD4_mutations$Detection[MRD4_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD4_mutations$Detection[MRD4_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD4_mutations$Detection[MRD4_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD4_mutations$Mutations[MRD4_mutations$Mutations == "DNMT3A.742"]<- "DNMT3A.P743Wfs"
+
+MRD4_ncells %>% arrange(desc(value))
+MRD4_bubble_order<- c("Sample 2_8", "Sample 1", "Sample 5_6", "Sample 7", "Sample 3_4")
+
+gg_bubble_MRD4 <- ggplot(MRD4_mutations, aes(x = factor(Sample, levels = MRD4_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 2_8" = "S1", "Sample 1" = "S2", "Sample 5_6" = "S3",
+                                                      "Sample 7" = "S4", "Sample 3_4" = "S5"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+MRD4_ncells_plotting <- MRD4_ncells %>% dplyr::filter(!variable == "Sample 2_8" & !variable == "Sample 5_6" & !variable == "Sample 3_4")
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 1"]<- "Host_1"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 7"]<- "Host_2"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 8"]<- "Host_3"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 2"]<- "Donor_3"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 4"]<- "Host_4"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 3"]<- "Donor_4"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 6"]<- "Host_5"
+MRD4_ncells_plotting$variable[MRD4_ncells_plotting$variable == "Sample 5"]<- "Donor_5"
+                 
+                       
+MRD4_ncells_plotting<- MRD4_ncells_plotting %>%
+                        mutate(Source = case_when(
+                        variable=="Host_1"~1,
+                        variable=="Host_2"~2,
+                        variable=="Host_3"~3,
+                        variable=="Donor_3"~3,
+                        variable=="Host_4"~4,
+                        variable=="Donor_4"~4,
+                        variable=="Host_5"~5,
+                        variable=="Donor_5"~5,))
+
+
+MRD4_ncell_order <- c("3", "1", "5", "2", "4")
+
+ gg_ncell_MRD4 <- ggplot(data = MRD4_ncells_plotting, aes(x = factor(Source,level = MRD4_ncell_order), 
+                                                          fill = factor(variable, levels = c("Donor_3", "Donor_4","Donor_5", "Host_1", 
+                                                                                             "Host_2", "Host_3","Host_4", "Host_5")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  scale_fill_manual(values =c("Host_1" = "#9381FF", "Donor_4" = "forestgreen", "Donor_5" = "forestgreen", "Host_2" = "#9381FF", 
+                                              "Donor_3" = "forestgreen", "Host_3" = "#9381FF", "Host_4" = "#9381FF", "Host_5" = "#9381FF" ))+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,1250), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD4")
+
+ 
+gg_MRD4_decon <- gg_ncell_MRD4 + plot_spacer() + gg_bubble_MRD4 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+#ggsave(plot = gg_MRD4_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD4_decon_plot.tiff", device = "tiff")
+
+```
+
+```{r}
+
+MRD5_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_mutations.xlsx")
+MRD5_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_ncells_FINAL.csv")
+
+MRD5_ncells$variable <- str_replace(MRD5_ncells$variable, "Cluster_", "Sample ")
+MRD5_ncells$value <- as.numeric(MRD5_ncells$value)
+
+MRD5_mutations$scVAF[MRD5_mutations$Detection == "Bulk"]<-1
+MRD5_mutations$Detection[MRD5_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD5_mutations$Detection[MRD5_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD5_mutations$Detection[MRD5_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD5_mutations$Mutations[MRD5_mutations$Mutations == "NPM1.287"]<- "NPM1.W288Cfs"
+MRD5_mutations$Mutations[MRD5_mutations$Mutations == "RUNX1.118"]<- "RUNX1.V119Gfs"
+
+MRD5_ncells %>% arrange(desc(value))
+MRD5_bubble_order<- c("Sample 1", "Sample 5", "Sample 2", "Sample 3", "Sample 4")
+
+gg_bubble_MRD5 <- ggplot(MRD5_mutations, aes(x = factor(Sample, levels = MRD5_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 1" = "S1", "Sample 5" = "S2", "Sample 3" = "S4",
+                                                      "Sample 4" = "S5", "Sample 2" = "S3"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+MRD5_ncells_plotting <- MRD5_ncells 
+MRD5_ncell_order <- c("1", "5", "2", "3", "4")
+
+ gg_ncell_MRD5 <- ggplot(data = MRD5_ncells_plotting, aes(x = factor(X,level = MRD5_ncell_order), 
+                                                          fill = factor(variable, levels = c("Sample 1", "Sample 2", "Sample 3","Sample 4", "Sample 5")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  scale_fill_manual(values =c("Sample 1" = "#9381FF", "Sample 2" = "#9381FF", "Sample 3" = "#9381FF", 
+                                              "Sample 4" = "#9381FF", "Sample 5" = "#9381FF"))+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,1250), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD5")
+ 
+gg_MRD5_decon <- gg_ncell_MRD5 + plot_spacer() + gg_bubble_MRD5 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+ggsave(plot = gg_MRD5_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD5_decon_plot.tiff", device = "tiff")
+
+```
+
+```{r}
+#C1 is donor,  C3 is host
+
+MRD6_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_mutations.xlsx")
+MRD6_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_ncells_FINAL.csv")
+
+MRD6_ncells$variable <- str_replace(MRD6_ncells$variable, "Cluster_", "Sample ")
+MRD6_ncells[nrow(MRD6_ncells) + 1,] = c("7", "Sample 1_3", 593)
+MRD6_ncells$value <- as.numeric(MRD6_ncells$value)
+
+MRD6_mutations$scVAF[MRD6_mutations$Detection == "Bulk"]<-1
+MRD6_mutations$Detection[MRD6_mutations$Detection == "scMRD"]<-"scMRD only"
+MRD6_mutations$Detection[MRD6_mutations$Detection == "Bulk"]<-"Bulk only"
+MRD6_mutations$Detection[MRD6_mutations$Detection == "Both"]<-"scMRD + Bulk"
+MRD6_mutations$Mutations[MRD6_mutations$Mutations == "NPM1.287"]<- "NPM1.W288Cfs"
+
+MRD6_ncells %>% arrange(desc(value))
+MRD6_bubble_order<- c("Sample 6", "Sample 1_3", "Sample 5", "Sample 4", "Sample 2")
+
+gg_bubble_MRD6 <- ggplot(MRD6_mutations, aes(x = factor(Sample, levels = MRD6_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          scale_x_discrete(labels = c("Sample 6" = "S1", "Sample 1_3" = "S2", "Sample 5" = "S3",
+                                                      "Sample 4" = "S4", "Sample 2" = "S5"))+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+MRD6_ncells_plotting <- MRD6_ncells %>% dplyr::filter(!variable == "Sample 1_3")
+MRD6_ncells_plotting$Source <- ifelse(MRD6_ncells_plotting$variable == "Sample 1" | MRD6_ncells_plotting$variable == "Sample 3" , 0, MRD6_ncells_plotting$X)
+MRD6_ncell_order <- c("6", "0", "5", "4", "2")
+
+gg_ncell_MRD6 <- ggplot(data = MRD6_ncells_plotting, aes(x = factor(Source,level = MRD6_ncell_order), 
+                                                          fill = factor(variable, levels = c("Sample 1", "Sample 2", "Sample 3","Sample 4", "Sample 5", "Sample 6")), 
+                                                            y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  scale_fill_manual(values =c("Sample 1" = "forestgreen", "Sample 2" = "#9381FF", "Sample 5" = "#9381FF", 
+                                              "Sample 3" = "#9381FF", "Sample 4" = "#9381FF", "Sample 6" = "#9381FF"))+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.8, position = position_stack(vjust= 1))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,2000), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("MRD6")
+
+
+gg_MRD6_decon <- gg_ncell_MRD6 + plot_spacer() + gg_bubble_MRD6 + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+
+#ggsave(plot = gg_MRD6_decon, width = 5.5, height = 8, dpi = 500, filename = "MRD6_decon_plot.tiff", device = "tiff")
+
+```
+
+```{r}
+
+postHSCT_mutations <- read_xlsx("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD_v2_HSCT_mutations.xlsx")
+postHSCT_ncells <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD_v2_HSCT_ncell.csv")
+
+
+postHSCT_mutations$scVAF[postHSCT_mutations$Detection == "Bulk"]<-1
+postHSCT_mutations$Detection[postHSCT_mutations$Detection == "scMRD"]<-"scMRD only"
+postHSCT_mutations$Detection[postHSCT_mutations$Detection == "Bulk"]<-"Bulk only"
+postHSCT_mutations$Detection[postHSCT_mutations$Detection == "Both"]<-"scMRD + Bulk"
+postHSCT_mutations$Mutations[postHSCT_mutations$Mutations == "NPM1.287"]<- "NPM1.W288Cfs"
+postHSCT_mutations$Mutations[postHSCT_mutations$Mutations == "DNMT3A.742"]<- "DNMT3A.P743Wfs"
+postHSCT_mutations$Mutations[postHSCT_mutations$Mutations == "RUNX1.143"]<- "RUNX1.E143Dfs"
+postHSCT_mutations$Mutations[postHSCT_mutations$Mutations == "DNMT3A.592"]<- "DNMT3A.Y592*"
+
+postHSCT_mutations <- postHSCT_mutations %>% subset(Mutations %in% c("NPM1.W288Cfs","DNMT3A.P743Wfs","NRAS.Q61R", "IDH2.R172K", 
+                                                                     "WT1.S386Sfs", "TP53.R181H", "RUNX1.R166*","RUNX1.R204Q", "DNMT3A.R882H"))
+
+postHSCT_bubble_order<- c("MRD4-S1", "MRD6-S2","MRD2-S2" ,"MRD4-S3", "MRD4-S5", "MRD1-S4")
+
+gg_bubble_postHSCT <- ggplot(postHSCT_mutations, aes(x = factor(Sample, levels = postHSCT_bubble_order), y = reorder(Mutations, scVAF))) + 
+                          geom_point(aes(size = scVAF, fill = Detection, shape = Detection),alpha = 0.9, show.legend = TRUE) + 
+                          scale_shape_manual(values=bubble_shapes)+
+                          scale_fill_manual(values = bubble_colors)+
+                          scale_size_continuous(limits = c(0.000001, 100), range = c(1,8), breaks = c(0.01, 0.1, 0.5, 1,10,50,75, 100)) + 
+                          theme_bw()+
+                          theme(legend.title.align=.5, 
+                                axis.text.x = element_text(colour = "black", size = 12, angle = 45, vjust = 1, hjust = 1),
+                                axis.text.y = element_text(colour = "black", size = 10), 
+                                legend.text = element_text(size = 10, colour ="black"), 
+                                legend.title = element_text(size = 12), 
+                                panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1), 
+                          legend.position = "right")+
+                          xlab("")+
+                          ylab("")+
+                          guides(shape=guide_legend(title="Detection"))+
+                          guides(fill=guide_legend(title="Detection", override.aes = list(size = 5)))+
+                          guides(size=guide_legend(title="scMRD VAF"))
+
+postHSCT_ncells_plotting <- postHSCT_ncells %>% mutate(Source = case_when(
+                            variable=="MRD4-S1-Donor" ~ 1,
+                            variable=="MRD4-S1-Host" ~ 1,
+                            variable=="MRD6-S2-Donor" ~ 2,
+                            variable=="MRD6-S2-Host" ~ 2,
+                            variable=="MRD2-S2-Donor" ~ 3,
+                            variable=="MRD2-S2-Host" ~ 3,
+                            variable=="MRD4-S3-Donor" ~ 4,
+                            variable=="MRD4-S3-Host" ~ 4,
+                            variable=="MRD4-S5-Donor" ~ 5,
+                            variable=="MRD4-S5-Host" ~ 5,
+                            variable=="MRD1-S4-Host" ~ 6,
+                            variable=="MRD1-S4-Donor" ~ 6))
+
+postHSCT_ncell_order <- c("1", "2", "3", "4", "5","6")
+
+gg_ncell_postHSCT <- ggplot(data = postHSCT_ncells_plotting, aes(x = factor(Source,level = postHSCT_ncell_order), 
+                            fill = factor(variable, levels = c("MRD4-S1-Donor", "MRD6-S2-Donor", "MRD2-S2-Donor",
+                                                               "MRD4-S3-Donor", "MRD4-S5-Donor", "MRD1-S4-Donor",
+                                                               "MRD4-S1-Host", "MRD6-S2-Host", "MRD2-S2-Host",
+                                                               "MRD4-S3-Host", "MRD4-S5-Host", "MRD1-S4-Host")),y = value)) +
+                  geom_bar(stat = "identity", color = "black", alpha = .5, show.legend = FALSE)+
+                  scale_fill_manual(values =c("MRD4-S1-Donor" = "forestgreen", "MRD6-S2-Donor"= "forestgreen", "MRD2-S2-Donor"= "forestgreen",
+                                              "MRD4-S3-Donor"= "forestgreen", "MRD4-S5-Donor"= "forestgreen", "MRD1-S4-Donor"= "forestgreen", 
+                                              "MRD4-S1-Host" = "#9381FF", "MRD6-S2-Host" = "#9381FF", "MRD2-S2-Host" = "#9381FF",
+                                              "MRD4-S3-Host"= "#9381FF", "MRD4-S5-Host"= "#9381FF", "MRD1-S4-Host" = "#9381FF"))+
+                  geom_text(aes(label = value), hjust = 0.5, vjust = -.6, position = position_stack(vjust= 1))+
+                            theme_classic()+
+                            scale_y_continuous(limits = c(0,1250), expand = c(0, 0))+
+                            theme(axis.text.x = element_blank(),
+                                   axis.line.x = element_blank(),
+                                   plot.title = element_text(hjust = 0.5, size = 20),
+                                   axis.ticks.x = element_blank(), 
+                                   axis.text.y = element_text(size=12, face = "bold"), 
+                                   axis.title.y = element_text(size = 12))+
+                            xlab("")+
+                            ylab("Cell Number")+
+                            ggtitle("Post-HSCT")
+
+gg_postHSCT_decon <- gg_ncell_postHSCT + plot_spacer() + gg_bubble_postHSCT + plot_layout(ncol = 1, heights =  c(6,-.77, 8), guides = "collect")
+#ggsave(plot = gg_postHSCT_decon, width = 5.6, height = 8, dpi = 500, filename = "postHSCT_decon_plot.tiff", device = "tiff")
+
+
+```
