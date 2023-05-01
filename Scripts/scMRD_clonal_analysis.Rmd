@@ -1,0 +1,635 @@
+---
+title: "scMRD_clonal_analysis"
+author: "TR"
+date: "2023-04-28"
+output: html_document
+---
+
+Here you'll find code used to determine clonal architecture in samples that were demulitplexed from scMRD runs. 
+
+Load in packages and .h5 file.
+```{r}
+
+library(tidyverse)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(umap)
+library(pals)
+library(cluster)
+library(ClusterR)
+library(pheatmap)
+library(superheat)
+library(cultevo)
+library(cowplot)
+library(lsa)
+library(factoextra)
+library(NbClust)
+library(RColorBrewer)
+library(magrittr)
+library(VariantAnnotation)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+
+file<- c("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX_scDNA_h5_files/WX_MRD5.dna+protein.h5")
+
+```
+
+Load in the manually curated transcript ID table and annotation key. More detailed information for generating the transcript ID table can be found here: https://bowmanr.github.io/scDNA_myeloid/hdf5-and-loom-input.html (this is also overall an excellent resource for scDNA+protein analysis). 
+```{r}
+
+annotation_key <- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/annotation_key_RUNX1C_geneid.csv")
+    annotation_key$GENEID<- NULL
+
+hg19refseq_txdb <- loadDb("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/hg19refseq_txdb_new.sqlite")
+
+annotation_key%<>%inner_join(VariantAnnotation::select(hg19refseq_txdb,
+                                    keys=annotation_key$ccds_id,
+                                    columns=c("TXID","TXNAME"),
+                                    keytype = "TXNAME"),
+                                    by=c("ccds_id"="TXNAME"))%>%
+                                    mutate(TXID=as.character(TXID))
+
+```
+
+Read in the numerical genotyping (NGT) matrix from the H5 file, setting the desired cutoffs for mutation VAF (0.1%) and genotyping call rate (20%). This can take some time to load, so it is recommended to do this once and export the NGT as an RDS file for future use. I have previously exported the NGT matrix as an RDS, so I am just loading it here.
+```{r, NGT extraction}
+
+# NGT <- read_tapestri_h5_NGT(file,
+#        VAF_cutoff = 0.001,
+#        GT_cutoff = 20 )
+
+NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_NGT.rds")
+
+```
+
+Read in the sample-specific NGT that was exported at the end of "scMRD_demultiplexing".
+```{r}
+
+filtered_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD5_v2_S1.rds") #nomenclature here is pre-renaming.
+
+```
+
+Format data and annotate variants using the `GenomicRanges` and `VariantAnnotation` packages.
+```{r, variant annotation}
+
+variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id") #all variants
+select_variants <- setdiff(colnames(filtered_NGT), "Cell") #variants in the NGT (influenced by VAF and GT cutoffs)
+
+SNV_mat <- data.frame(do.call(cbind, rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/"))) %>%
+                      dplyr::filter(.data$id %in% tidyselect::all_of(select_variants))%>% 
+                      dplyr::mutate(ALT = gsub("\\*","N", .data$ALT))%>% 
+                      dplyr::mutate(REF = gsub("\\*","N", .data$REF))%>% 
+                      dplyr::mutate(CHROM = paste0("chr",.data$CHROM)) 
+
+SNV_mat$REF <- as(SNV_mat$REF, "DNAStringSet")
+SNV_mat$ALT <- as(SNV_mat$ALT, "DNAStringSet")
+
+variant_gRange <- GenomicRanges::makeGRangesFromDataFrame(SNV_mat, 
+                  seqnames.field = "CHROM", start.field = "POS", end.field = "POS", 
+                  keep.extra.columns = TRUE)
+  
+variant_gRange$QUERYID <- 1:length(variant_gRange)
+
+all_variants <- VariantAnnotation::locateVariants(query = variant_gRange, 
+                                                           subject = hg19refseq_txdb, region = 
+                                                           VariantAnnotation::AllVariants()) %>% 
+                                                           data.frame()
+
+coding_variants <- VariantAnnotation::predictCoding(query = variant_gRange, 
+                                                    subject = hg19refseq_txdb, 
+                                                    seqSource = Hsapiens, varAllele = variant_gRange$ALT) %>%
+                                                    data.frame()
+                                                    coding_variants$LOCATION<- "coding"                                  
+    
+intronic_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) != c("coding")) %>%
+                                    plyranges::filter(as.character(.data$LOCATION) != c("promoter")) %>%
+                                    dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+spliceSite_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) == c("spliceSite")) %>%
+                                    dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+splice_intronic<- dplyr::bind_rows(intronic_variants, spliceSite_variants)
+
+   
+out <- dplyr::bind_rows(splice_intronic, coding_variants) %>% 
+       dplyr::inner_join(annotation_key) %>% 
+       dplyr::mutate(AA = case_when(
+          .data$CONSEQUENCE == "nonsynonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "frameshift" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "nonsense" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "synonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "not translated" ~ paste0(.data$gene_name, ".not_txl"),
+          .data$LOCATION == "spliceSite" ~ paste0(.data$gene_name, ".splice"),
+          .data$LOCATION == "intron" ~ paste0(.data$gene_name, ".intron")))
+
+```
+Aggregate the annotated variant information, bulk VAF, genotyping call rate, etc. into a dataframe named `final_mutation_info`.
+```{r, final mutation info}
+
+final_mutation_info <- data.frame(Bulk_VAF = apply(filtered_NGT %>% 
+                                  dplyr::select(!.data$Cell), MARGIN = 2, function(x) {
+                                  (sum(x, na.rm = TRUE)/(sum(!is.na(x)) * 2)) * 100
+                                  }), GT_call_rate = apply(filtered_NGT %>% dplyr::select(!.data$Cell), 
+                                  MARGIN = 2, function(x) {
+                                  100 - (sum(is.na(x))/length(x) * 100)
+                                  }), id = colnames(filtered_NGT)[colnames(filtered_NGT) !="Cell"])%>% 
+                                  dplyr::inner_join(out, by = "id")
+
+head(final_mutation_info)
+
+```
+
+
+Here we will search for specific variants we expect to find this sample based on bulk sequencing. We rename the frameshifts for the purpose of clarity. 
+```{r}
+
+final_mutation_info$AA[final_mutation_info$AA == "NPM1.287"]<- "NPM1.W288Cfs" 
+final_mutation_info$AA[final_mutation_info$AA == "RUNX1.118"]<- "RUNX1.V119Gfs" 
+
+required_variants<- final_mutation_info%>%
+                    filter(grepl("NRAS.G13D|RUNX1.V119Gfs|KRAS.Q61P|NRAS.G12V|IDH2.R140Q",AA)) %>%
+                    filter(GT_call_rate > 50) %>%
+                    filter(CONSEQUENCE%in%c("nonsynonymous","frameshift","nonsense")) %>%
+                    dplyr::select(id,Bulk_VAF,GT_call_rate,AA) %>% 
+                    pull(id)
+
+```
+
+Next we'll determine which cells possess complete genotyping for the `required_variants`. We want to retain these cells throughout downstream analyses and refer to them as `required_cells.` 
+```{r}
+
+required_cells <- filtered_NGT %>% 
+                  dplyr::select(Cell,tidyselect::all_of(required_variants)) %>%
+                  filter(if_all(.cols = !Cell,.fns = ~ !is.na(.x))) %>%
+                  pull(Cell)
+
+length(required_cells)
+
+```
+
+In a different experimental setting, we may be interested in seeing if there are other variants that are well represented among these required variants. However for our purposes here, we are only interested in the `required_variants.`
+```{r}
+
+coding_variants <- final_mutation_info %>%
+                   dplyr::filter(!grepl("intronic",AA)) %>%
+                   dplyr::filter(CONSEQUENCE!="synonymous") %>% 
+                   dplyr::filter(GT_call_rate > 50)%>%
+                   dplyr::select(id,Bulk_VAF,GT_call_rate,AA)%>% #break here to observe full table with mutation information of interest
+                   pull(id)
+
+mut_info_annotated<-  filtered_NGT %>%
+                      pivot_longer(cols=-Cell,names_to="id",values_to = "NGT") %>% 
+                      filter(!is.na(NGT)) %>% 
+                      filter(id%in%coding_variants) %>% 
+                      group_by(id) %>% 
+                      summarise(required_cell_ratio = mean(all_of(required_cells)%in%Cell)) %>% 
+                      arrange(desc(required_cell_ratio)) %>% 
+                      inner_join(final_mutation_info) %>%
+                      filter(!grepl("intronic",AA)) %>%  
+                      mutate(id=factor(id,levels=c(id))) %>% 
+                      mutate(required=ifelse(id%in%required_variants,"Required","Other")) %>%
+                      dplyr::select(id,required_cell_ratio,Bulk_VAF,GT_call_rate,AA,required)
+
+```
+
+Select all cells with required variants to generate a complete NGT matrix. 
+```{r}
+
+complete_NGT <- filtered_NGT %>%  
+                dplyr::select(Cell,all_of(required_variants)) %>%
+                filter(Cell%in%required_cells)
+
+print(dim(complete_NGT))
+print(table(is.na(complete_NGT)))
+
+```
+There are likely quite a few cells which we can hope to gain information from though, albeit with lower quality information.  We can extract those too and mask them.  The function `active_NGT_filter` below is written for optimal extraction of meaningful cells from a wide range of variants.
+```{r}
+
+active_NGT_filter <- function (NGT_filter, variants_of_interest, required_variants, 
+                      required_cells, variant_score_cutoff = 0.9, cell_score_cutoff = 0.9, 
+                      greedy_scalar = 0.01) 
+                  {
+                      kept_variants <- setdiff(colnames(NGT_filter), "Cell")
+                      kept_cells <- NGT_filter$Cell
+                      variants_to_remove <- c()
+                      cells_to_remove <- c()
+                      variants_to_remove_temp <- data.frame(Variant = "", Score = "")
+                      cells_to_remove_temp <- data.frame(Cell = "", Score = "")
+                      NGT_long <- NGT_filter %>% tidyr::pivot_longer(cols = !.data$Cell, 
+                          names_to = "Variant", values_to = "NGT") %>% dplyr::filter(.data$Variant %in% 
+                          tidyselect::all_of(variants_of_interest)) %>% dplyr::mutate(Required_cell = ifelse(.data$Cell %in% 
+                          tidyselect::all_of(required_cells), TRUE, FALSE)) %>% 
+                          dplyr::mutate(Required_variant = ifelse(.data$Variant %in% 
+                              tidyselect::all_of(required_variants), TRUE, FALSE))
+                      while (length(variants_to_remove_temp$Variant) != 0 & length(cells_to_remove_temp$Cell) != 
+                          0) {
+                          variants_to_remove_temp <- NGT_long %>% dplyr::group_by(.data$Variant) %>% 
+                              dplyr::summarize(Score = sum(!is.na(.data$NGT))/length(.data$NGT), 
+                                  required = sum(.data$Required_variant)) %>% dplyr::filter(!.data$Variant %in% 
+                              tidyselect::all_of(required_variants)) %>% dplyr::filter(.data$Score <= 
+                              (min(.data$Score) + min(.data$Score) * tidyselect::all_of(greedy_scalar))) %>% 
+                              dplyr::filter(.data$Score < tidyselect::all_of(variant_score_cutoff))
+                          variants_to_remove <- unique(c(variants_to_remove, variants_to_remove_temp$Variant))
+                          cells_to_remove_temp <- NGT_long %>% dplyr::group_by(.data$Cell) %>% 
+                              dplyr::summarize(Score = sum(!is.na(.data$NGT))/length(.data$NGT), 
+                                  required = sum(.data$Required_cell)) %>% dplyr::filter(!.data$Cell %in% 
+                              tidyselect::all_of(required_cells)) %>% dplyr::filter(.data$Score <= 
+                              (min(.data$Score) + min(.data$Score) * tidyselect::all_of(greedy_scalar))) %>% 
+                              dplyr::filter(.data$Score < tidyselect::all_of(cell_score_cutoff))
+                          cells_to_remove <- unique(c(cells_to_remove, cells_to_remove_temp$Cell))
+                          NGT_long %<>% dplyr::filter(!.data$Variant %in% tidyselect::all_of(variants_to_remove)) %>% 
+                              dplyr::filter(!.data$Cell %in% tidyselect::all_of(cells_to_remove))
+                      }
+                      NGT_subset <- NGT_long %>% dplyr::filter(!.data$Cell %in% 
+                          tidyselect::all_of(cells_to_remove)) %>% dplyr::filter(!.data$Variant %in% 
+                          tidyselect::all_of(variants_to_remove)) %>% dplyr::select(.data$Cell, 
+                          .data$Variant, .data$NGT) %>% tidyr::pivot_wider(names_from = .data$Variant, 
+                          values_from = .data$NGT)
+                      return(NGT_subset)
+                  }
+
+```
+
+Here we will simply restrict the filtering to the exact `required_variants` we are interested in.  
+```{r}
+
+maximal_NGT <- active_NGT_filter(filtered_NGT,
+                                 variants_of_interest=required_variants,
+                                 required_variants=required_variants,
+                                 required_cells=required_cells,
+                                 variant_score_cutoff=0.4,
+                                 cell_score_cutoff=0.4,
+                                 greedy_scalar=0.005)
+
+```
+
+Compile variant of interest information (i.e. genomic id, VAF, genotyping rate, amino acid change)
+```{r}
+final_variant_info <- mut_info_annotated %>%
+                      filter(id %in% (all_of(colnames(maximal_NGT)))) %>%
+                      dplyr::select(id,Bulk_VAF,GT_call_rate,AA) %>%
+                      arrange(desc(Bulk_VAF))
+
+```
+
+We now have our complete_NGT (full of required_cells only), and our maximal_NGT where we may have low quality information.  Using the function below we can fill in the NA's in the maximal_NGT with that low quality info, and flag cells as either "Complete" or "Other" for downstream processing.
+```{r}
+
+generate_lowQC_matrix_TR <- function (NGT_to_fill, complete_NGT, file) 
+                            {
+                                variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+                                cells <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ra/barcode")
+                                variant_select <- match(setdiff(colnames(NGT_to_fill), "Cell"), 
+                                    variants)
+                                cell_select <- match(NGT_to_fill %>% dplyr::pull(.data$Cell), 
+                                    cells)
+                                full_NGT <- setNames(data.frame(Cell = NGT_to_fill %>% dplyr::pull(.data$Cell), 
+                                    t(rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT", 
+                                        index = list(variant_select, cell_select)))), colnames(NGT_to_fill))
+                                full_NGT[full_NGT == 3] <- NA
+                                full_NGT %<>% filter(across(.cols = !.data$Cell, .fns = ~!is.na(.x)))
+                                full_NGT %<>% dplyr::mutate(Group = dplyr::case_when(.data$Cell %in% 
+                                    tidyselect::all_of(complete_NGT$Cell) ~ "Complete", TRUE ~ 
+                                    "Other"))
+                                return(full_NGT)
+                            }
+
+```
+
+```{r}
+
+final_NGT <- generate_lowQC_matrix_TR(file=file,
+                                      complete_NGT=complete_NGT,
+                                      NGT_to_fill=maximal_NGT)
+
+```
+
+Now we want to enumerate how many clones are present by identifying the abundance of genetically identical cells.  We use the following clone naming convention, where left to right reads in the order of bulk VAF, and each genotype is separated by an underscore ("_").  So a clone 1_0_1_0 would be heterozygous for the 1st and 3rd most abundant mutations, and WT for the 2nd and 4th most abundant.  This function returns a list with three slots: Clones, NGT, and Architecture.  The replicates argument is used to determine how many rounds of resampling should be performed to establish a 95% confidence interval on the abundance of a particular clone.
+```{r}
+enumerate_clones_TR <- function (NGT, variant_metadata, replicates = 100) 
+{
+    bulk_VAF_order <- NGT %>% dplyr::select(!c(.data$Cell, .data$Group)) %>% 
+        colSums %>% sort(decreasing = TRUE) %>% names
+    NGT_to_clone <- NGT[, c("Cell", "Group", bulk_VAF_order)] %>% 
+        tidyr::unite("Clone", tidyselect::all_of(bulk_VAF_order), 
+            sep = "_", remove = FALSE)
+    if ("Group" %in% colnames(final_NGT)) {
+        clonal_abundance <- NGT_to_clone %>% dplyr::group_by(Group) %>% 
+            dplyr::count(.data$Clone, name = "Count") %>% dplyr::arrange(.data$Count) %>% 
+            tidyr::pivot_wider(id_cols = .data$Clone, names_from = .data$Group, 
+                values_from = .data$Count) %>% dplyr::mutate(Complete = ifelse(is.na(.data$Complete), 
+            0, .data$Complete)) %>% dplyr::mutate(Other = ifelse(is.na(.data$Other), 
+            0, .data$Other)) %>% dplyr::group_by(.data$Clone) %>% 
+            dplyr::mutate(Count = sum(.data$Other, .data$Complete)) %>% 
+            dplyr::ungroup()
+    }
+    else {
+        clonal_abundance <- NGT_to_clone %>% dplyr::count(.data$Clone, 
+            name = "Count") %>% dplyr::arrange(.data$Count)
+    }
+    resample_fun <- function(data) {
+        x <- data[sample(x = 1:nrow(data), replace = TRUE), ]
+        return(as.matrix(x %>% dplyr::count(.data$Clone, name = "Count") %>% 
+            dplyr::arrange(.data$Count)))
+    }
+    test <- replicate(n = replicates, resample_fun(NGT_to_clone), 
+        simplify = "array")
+    if (class(test) == "list") {
+        y <- setNames(lapply(test, data.frame), 1:replicates)
+    }
+    else if (class(test) == "array") {
+        y <- setNames(apply(test, 3, data.frame), 1:replicates)
+    }
+    y %<>% purrr::imap(~set_names(.x, c("Clone", .y))) %>% purrr::reduce(dplyr::full_join, 
+        by = "Clone")
+    y[is.na(y)] <- 0
+    z <- data.frame(t(apply(y %>% dplyr::select(-.data$Clone), 
+        1, function(p) {
+            stats::quantile(as.numeric(p), probs = c(0.025, 0.975))
+        })), Clone = y$Clone)
+    clonal_abundance_boot_CI <- data.frame(dplyr::inner_join(data.frame(clonal_abundance), 
+        z, by = "Clone"))%>% rename("Other" = "n_Other", "Complete" = "n_Complete","X2.5." = "LCI", "X97.5." = "UCI")
+    clonal_architecture <- NGT_to_clone %>% dplyr::select(!c(.data$Cell, 
+        .data$Group)) %>% dplyr::distinct() %>% tidyr::pivot_longer(cols = !.data$Clone, 
+        names_to = "id", values_to = "Genotype") %>% dplyr::mutate(Genotype = dplyr::case_when(Genotype == 
+        3 ~ "error", Genotype == 0 ~ "WT", Genotype == 1 ~ "Heterozygous", 
+        Genotype == 2 ~ "Homozygous", TRUE ~ "error")) %>% dplyr::inner_join(variant_metadata %>% 
+        dplyr::select(.data$id, .data$AA), by = "id") %>% dplyr::mutate(AA = factor(AA, 
+        levels = as.character(final_variant_info$AA)))
+    if (any(clonal_architecture$Genotype == "error")) {
+        "something went wrong"
+    }
+    return(list(Clones = clonal_abundance_boot_CI, NGT = NGT_to_clone, 
+        Architecture = clonal_architecture))
+}
+
+```
+
+Now we enumerate clones over 500 replicates, using the `final_NGT` and `final_variant_info` as input. 
+```{r}
+
+final_sample_summary<- enumerate_clones_TR( NGT= final_NGT,
+                                            variant_metadata=final_variant_info,
+                                            replicates = 500)
+
+```
+
+With the clones enumerated, we can now aggregate the median read depth, genotype quality and allele dropout per clone.  We overwrite this into the 'Clones' slot into the final_sample_summary object. 
+```{r}
+
+quality_output<- function (file, filter = TRUE, input_variants, input_cells, NGT, 
+    DP_cut = 10, AF_cut = 20, GQ_cut = 20) 
+{
+    all_variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+    select_variants <- match(input_variants, all_variants)
+    all_cells <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ra/barcode")
+    select_cells <- match(input_cells, all_cells)
+    AF <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/AF", 
+        index = list(select_variants, select_cells))
+    DP <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/DP", 
+        index = list(select_variants, select_cells))
+    GQ <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/GQ", 
+        index = list(select_variants, select_cells))
+    ADO <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/ado_rate")
+    ADO_select <- which(ADO != "-1")
+    NGT_ADO <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT", 
+        index = list(ADO_select, select_cells))
+    haplotype <- apply(NGT_ADO, 1, median)
+    ADO_rate_by_cell <- data.frame(Cell = input_cells, ADO = apply(NGT_ADO, 
+        2, function(x) {
+            sum(x != haplotype)/length(x)
+        }))
+    filtered_long <- data.frame(setNames(data.frame(AF, variants = input_variants), 
+        c(tidyselect::all_of(input_cells), "variants")) %>% tidyr::pivot_longer(cols = !c(variants), 
+        names_to = "Cell", values_to = "AF"), data.frame(DP) %>% 
+        tidyr::pivot_longer(cols = everything(), values_to = "DP") %>% 
+        dplyr::select(DP), data.frame(GQ) %>% tidyr::pivot_longer(cols = everything(), 
+        values_to = "GQ") %>% dplyr::select(GQ), NGT %>% dplyr::select(tidyselect::all_of(input_variants)) %>% 
+        tidyr::pivot_longer(cols = everything(), values_to = "NGT") %>% 
+        dplyr::select(NGT)) %>% dplyr::inner_join(ADO_rate_by_cell, 
+        by = "Cell")
+    if (filter == TRUE) {
+        filtered_long %<>% dplyr::filter(DP >= DP_cut & GQ >= 
+            GQ_cut) %>% dplyr::mutate(pass = dplyr::case_when(NGT == 
+            1 & (AF > AF_cut) & (AF < (100 - AF_cut)) ~ "include", 
+            NGT == 1 & ((AF <= AF_cut) | (AF >= (100 - AF_cut))) ~ 
+                "exclude", NGT == 2 & AF >= (100 - AF_cut) ~ 
+                "include", NGT == 2 & AF < (100 - AF_cut) ~ "exclude", 
+            NGT == 0 & AF <= AF_cut ~ "include", NGT == 0 & AF > 
+                AF_cut ~ "exclude", TRUE ~ "other")) %>% dplyr::filter(.data$pass == 
+            "include")
+    }
+    return(filtered_long)
+}
+
+
+clone_QC <- function (final_sample_summary, file) 
+              {
+                  if (any(grepl("Group", colnames(final_sample_summary$Clones)))) {
+                      stop(message("Clone QC already assessed"))
+                  }
+                  Cell_QC <- quality_output(file, filter = FALSE, input_variants = setdiff(colnames(final_sample_summary$NGT), 
+                      c("Cell", "Group", "Clone")), input_cells = final_sample_summary$NGT$Cell, 
+                      NGT = final_sample_summary$NGT, DP_cut = 10, AF_cut = 20, 
+                      GQ_cut = 30) %>% dplyr::inner_join(final_sample_summary$NGT %>% 
+                      dplyr::select(.data$Cell, .data$Group, .data$Clone), 
+                      by = "Cell") %>% dplyr::group_by(Group, Clone, variants) %>% 
+                      dplyr::summarize(AF_med = median(.data$AF), DP_med = median(.data$DP), 
+                          GQ_med = median(.data$GQ), ADO_med = median(.data$ADO)) %>% 
+                      dplyr::inner_join(final_sample_summary$Clones, by = "Clone")
+              }
+
+
+final_sample_summary$Clones<-clone_QC(final_sample_summary, file)
+
+```
+
+Now we'll order the data based on cell number in each clone, and filter the data with a clone threshold of >=3 cells. 
+```{r}
+
+consolidated_clonal_abundance<- final_sample_summary$Clones %>%
+                                  dplyr::group_by(Clone) %>% 
+                                  dplyr::mutate(AF = mean(AF_med),
+                                                DP_med = mean(DP_med),
+                                                GQ_med = mean(GQ_med))%>%
+                                  dplyr::distinct() %>% 
+                                  dplyr:: rowwise()%>%
+                                  dplyr::ungroup() %>% 
+                                  dplyr::arrange(.data$Count)
+
+  
+clonal_architecture <- final_sample_summary$Architecture
+mutant_order <- setdiff(colnames(final_sample_summary$NGT),c("Cell", "Clone", "Group"))
+clonal_architecture$Clone <- factor(clonal_architecture$Clone,levels = unique(rev(consolidated_clonal_abundance$Clone)))
+consolidated_clonal_abundance$Clone <- factor(consolidated_clonal_abundance$Clone, levels = levels(clonal_architecture$Clone))
+clone_threshold<- 3
+consolidated_clonal_abundance_filtered<- filter(consolidated_clonal_abundance, Count >= clone_threshold)
+
+clonal_architecture_filtered<- clonal_architecture %>% filter(Clone %in% consolidated_clonal_abundance_filtered$Clone)
+
+```
+
+Applying Mission Bio cutoffs for genotyping quality (GQ > 30) and read depth (DP > 10)
+```{r}
+
+GQ_cut<- 30 
+DP_cut<- 10
+
+consolidated_clonal_abundance_subset<-filter(consolidated_clonal_abundance_filtered, 
+                                             GQ_med>GQ_cut &
+                                             DP_med> DP_cut)
+
+clonal_architecture_subset<- clonal_architecture_filtered %>%
+    filter(Clone %in% consolidated_clonal_abundance_subset$Clone)
+
+gg_clonal_barplot <- ggplot(data = consolidated_clonal_abundance_subset, 
+        aes(x = Clone, y = Count, fill = Clone)) + 
+        stat_summary(geom = "bar", fill = "#A8D0DB", color = "black")+
+        geom_errorbar(aes(ymin = LCI, ymax = UCI), width = 0.2)+
+        theme_classic(base_size = 12) + 
+        scale_y_continuous(expand = c(0.01, 0)) +
+        ylab("Cell Count")+
+        theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.line.x = element_blank(), legend.position = "right", 
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        plot.title = element_text(hjust = 0.5))+
+        ggtitle("MRD5 S1")
+
+ gg_heatmap <- ggplot(data = clonal_architecture_subset, aes(x = Clone,y = AA, fill = Genotype)) + 
+        geom_tile(color = "black") + 
+        scale_fill_manual(values = c(WT = "#E5DADA", Heterozygous = "#840032", Homozygous = "#002642"))+
+        theme_classic(base_size = 14)+ ylab("")+
+        scale_y_discrete(limits = rev(levels(clonal_architecture$AA))) + 
+        theme(legend.position = "right", legend.direction = "vertical", 
+            axis.text.x = element_blank(), axis.line = element_blank(), 
+            axis.title.x = element_blank(), axis.ticks.x = element_blank(), 
+            plot.margin = unit(c(0, 0, 0, 0), "cm"))
+   
+   ggplot_grid_filtered<-plot_grid(gg_clonal_barplot, gg_heatmap, ncol = 1, align = "v", 
+        axis = "lr", rel_heights = c(1, 0.5))
+   
+   ggplot_grid_filtered
+
+   #ggsave(plot = ggplot_grid_filtered, width = 6, height = 4, dpi = 500, filename = "MRD5_S1_clones.tiff", device = "tiff")
+
+```
+
+Now we want to extract protein count data for this sample from the .h5 file. 
+```{r}
+
+read_tapestri_h5_protein_TR <- function (file = file) 
+                                {
+                                    protein_mat <- rhdf5::h5read(file = file, name = "/assays/protein_read_counts/layers/read_counts")
+                                    rownames(protein_mat) <- rhdf5::h5read(file = file, name = "/assays/protein_read_counts/ca/id")
+                                    colnames(protein_mat) <- rhdf5::h5read(file = file, name = "/assays/protein_read_counts/ra/barcode")
+                                    protein_mat_final <- data.frame(Cell = colnames(protein_mat), 
+                                        t(protein_mat)) %>% dplyr::mutate(Cell = gsub("-1", "", 
+                                        Cell)) %>% dplyr::filter(Cell %in% tidyselect::all_of(final_NGT$Cell))
+                                    return(protein_mat_final)
+                                }
+
+```
+
+We can also determine the DNA and protein library sizes and supply this as metadata.
+```{r}
+
+ extract_droplet_size_TR <- function (file, final_sample_summary) 
+                            {
+                                all_protein_droplets <- rhdf5::h5read(file = file, name = "/all_barcodes/protein_read_counts/layers/read_counts")
+                                all_dna_droplets <- rhdf5::h5read(file = file, name = "/all_barcodes/dna_read_counts/layers/read_counts")
+                                colnames(all_dna_droplets) <- rhdf5::h5read(file = file, 
+                                    name = "/all_barcodes/dna_read_counts/ra/barcode")
+                                colnames(all_protein_droplets) <- rhdf5::h5read(file = file, 
+                                    name = "/all_barcodes/protein_read_counts/ra/barcode")
+                                dna_size <- data.frame(Cell = colnames(all_dna_droplets), 
+                                    dna_size = log10(Matrix::colSums(all_dna_droplets)), 
+                                    amplicons = Matrix::colSums(all_dna_droplets > 0))
+                                protein_size <- data.frame(Cell = colnames(all_protein_droplets), 
+                                    proteins = Matrix::colSums(all_protein_droplets > 0), 
+                                    protein_size = log10(Matrix::colSums(all_protein_droplets)))
+                                md <- dplyr::inner_join(dna_size, protein_size) %>% dplyr::mutate(Cell = gsub("-1", 
+                                    "", Cell))
+                                md <- md  %>% full_join(final_sample_summary_subset$NGT, 
+                                    by = "Cell")
+                                return(md)
+                            }
+
+```
+
+We'll wrap the earlier clone annotation code into a function with three slots: NGT, Clones, Architecture.
+```{r}
+
+select_clones_TR <-  function (final_sample_summary = final_sample_summary, 
+                      GQ_cut = 30, DP_cut = 10, select_exact = FALSE) 
+                  {
+                      if (select_exact == FALSE) {
+                          select_clones <- final_sample_summary$Clones %>%
+                              dplyr::filter(GQ_med > GQ_cut) %>% dplyr::filter(DP_med > 
+                              DP_cut) %>% dplyr::filter(Count >= 3) %>% dplyr::group_by(Clone) %>% dplyr::pull(Clone) %>% unique() 
+                      }
+                      else {
+                          select_clones <- select_clones
+                      }
+                      final_sample_summary$NGT %<>% dplyr::filter(Clone %in% select_clones)
+                      final_sample_summary$Clones %<>% dplyr::filter(Clone %in% 
+                          select_clones)
+                      final_sample_summary$Architecture %<>% dplyr::filter(Clone %in% 
+                          select_clones)
+                      return(final_sample_summary)
+}
+
+```
+
+```{r}
+final_sample_summary_subset <- select_clones_TR(final_sample_summary,
+                                             GQ_cut=30,
+                                             DP_cut=10,
+                                             select_exact=FALSE)
+
+```
+Extract protein data and select cells from this sample. 
+```{r}
+
+protein_mat_final <- read_tapestri_h5_protein_TR(file=file) %>%
+                     filter(Cell %in% final_sample_summary_subset$NGT$Cell) %>% 
+                     dplyr::select(!Cell) %>%
+                          t() %>% as.data.frame()
+
+
+#write.csv(protein_mat_final, "MRD5_v2_S1_protein_mat.csv", row.names = TRUE)
+
+```
+
+Take a look at which mutations define each clone, and reference this for labeling clones below. 
+```{r}
+
+clonal_architecture_subset
+
+```
+
+```{r}
+
+metadata <- extract_droplet_size_TR(file, final_sample_summary = final_sample_summary_subset)
+
+```
+
+Before we export the clone and protein data, we need to select and label the clones so that we can easily track them by mutation in the meta analysis. In the aggregate protein analysis (see "scMRD_protein_analysis"), `final_metadata` and `protein_mat` from each sample are imported into the same .RMD file. Here we are labeling clones based on the presence or absence of each mutation. All clones that passed filtering and are included in the clonal barplot are annotated and exported for downstream protein analysis. 
+```{r}
+
+final_metadata <- metadata %>%
+                  dplyr::filter(Cell%in%colnames(protein_mat_final))%>%
+                  dplyr::arrange(match(Cell,colnames(protein_mat_final))) %>%
+                  dplyr::select(c(1:8)) %>%
+                  dplyr::mutate(Label = case_when(.$Clone == "1_0_0_0_0" ~ "NRAS", 
+                                                  .$Clone == "0_0_0_0_0" ~ "WT", 
+                                                  .$Clone == "0_0_1_0_0" ~ "KRAS",
+                                                  .$Clone == "2_0_0_0_0" ~ "NRAS",
+                                                  .$Clone == "1_1_0_1_0" ~ "NRAS_RUNX1_NRAS",
+                                                  .$Clone == "0_1_0_0_0" ~ "RUNX1",
+                                                  .$Clone == "0_1_0_1_0" ~ "NRAS_RUNX1"))
+
+
+ #write.csv(final_metadata, "MRD5_v2_S1_metadata.csv", row.names = TRUE)
+
+```
