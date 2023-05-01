@@ -1,0 +1,779 @@
+---
+title: "scMRD_protein_analysis"
+author: "TR"
+date: "2023-05-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Load in required packages
+```{r}
+
+library(tidyverse)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(umap)
+library(pals)
+library(cluster)
+library(ClusterR)
+library(pheatmap)
+library(superheat)
+library(cultevo)
+library(cowplot)
+library(lsa)
+library(factoextra)
+library(NbClust)
+library(RColorBrewer)
+library(magrittr)
+library(Seurat)
+library(pheatmap)
+library(viridis)
+library(data.table)
+library(compositions)
+library(ggpubr)
+
+```
+
+Load in sample metadata (derived from clonal analysis). Please note that protein data was not generated for MRD2, which is why these samples are not included in this analysis. 
+```{r}
+
+MRD1_S1_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S1_metadata.csv") 
+MRD1_S2_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S2_metadata.csv") 
+MRD1_S3_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S3_metadata.csv") 
+MRD1_S4_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S4_metadata.csv") 
+MRD1_S5_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S5_metadata.csv") 
+
+MRD3_S1_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S1_metadata.csv") 
+MRD3_S2_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S2_metadata.csv") 
+MRD3_S3_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S3_metadata.csv") 
+MRD3_S4_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S4_metadata.csv") 
+MRD3_S5_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S5_metadata.csv") 
+
+MRD4_S1_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S1_metadata.csv") 
+MRD4_S2_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S2_metadata.csv") 
+MRD4_S3_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S3_metadata.csv") 
+MRD4_S4_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S4_metadata.csv") 
+MRD4_S5_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S5_metadata.csv") 
+
+MRD5_S1_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S1_metadata.csv") 
+MRD5_S2_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S2_metadata.csv") 
+MRD5_S3_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S3_metadata.csv") 
+MRD5_S4_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S4_metadata.csv") 
+MRD5_S5_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S5_metadata.csv") 
+
+MRD6_S1_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S1_metadata.csv") 
+MRD6_S2_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S2_metadata.csv") 
+MRD6_S3_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S3_metadata.csv") 
+MRD6_S4_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S4_metadata.csv") 
+MRD6_S5_metadata<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S5_metadata.csv") 
+
+```
+
+Add sample column and label each sample accordingly
+```{r}
+
+MRD1_S1_metadata$Sample<- "MRD1_S1"
+MRD1_S2_metadata$Sample<- "MRD1_S2"
+MRD1_S3_metadata$Sample<- "MRD1_S3"
+MRD1_S4_metadata$Sample<- "MRD1_S4"
+MRD1_S5_metadata$Sample<- "MRD1_S5"
+
+MRD3_S1_metadata$Sample<- "MRD3_S1"
+MRD3_S2_metadata$Sample<- "MRD3_S2"
+MRD3_S3_metadata$Sample<- "MRD3_S3"
+MRD3_S4_metadata$Sample<- "MRD3_S4"
+MRD3_S5_metadata$Sample<- "MRD3_S5"
+
+MRD4_S1_metadata$Sample<- "MRD4_S1"
+MRD4_S2_metadata$Sample<- "MRD4_S2"
+MRD4_S3_metadata$Sample<- "MRD4_S3"
+MRD4_S4_metadata$Sample<- "MRD4_S4"
+MRD4_S5_metadata$Sample<- "MRD4_S5"
+
+MRD5_S1_metadata$Sample<- "MRD5_S1"
+MRD5_S2_metadata$Sample<- "MRD5_S2"
+MRD5_S3_metadata$Sample<- "MRD5_S3"
+MRD5_S4_metadata$Sample<- "MRD5_S4"
+MRD5_S5_metadata$Sample<- "MRD5_S5"
+
+MRD6_S1_metadata$Sample<- "MRD6_S1"
+MRD6_S2_metadata$Sample<- "MRD6_S2"
+MRD6_S3_metadata$Sample<- "MRD6_S3"
+MRD6_S4_metadata$Sample<- "MRD6_S4"
+MRD6_S5_metadata$Sample<- "MRD6_S5"
+
+```
+
+Load in protein count data (derived from clonal analysis)
+```{r}
+
+MRD1_S1_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S1_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD1_S1_metadata$Cell] 
+
+MRD1_S2_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S2_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD1_S2_metadata$Cell] 
+
+MRD1_S3_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S3_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD1_S3_metadata$Cell] 
+
+MRD1_S4_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S4_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD1_S4_metadata$Cell] 
+
+MRD1_S5_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD1_v2_S5_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD1_S5_metadata$Cell] 
+
+MRD3_S1_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S1_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD3_S1_metadata$Cell] 
+
+MRD3_S2_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S2_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD3_S2_metadata$Cell] 
+
+MRD3_S3_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S3_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD3_S3_metadata$Cell] 
+
+MRD3_S4_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S4_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD3_S4_metadata$Cell] 
+
+MRD3_S5_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD3_v2_S5_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD3_S5_metadata$Cell] 
+
+MRD4_S1_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S1_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD4_S1_metadata$Cell] 
+
+MRD4_S2_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S2_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD4_S2_metadata$Cell] 
+
+MRD4_S3_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S3_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD4_S3_metadata$Cell] 
+
+MRD4_S4_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S4_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD4_S4_metadata$Cell] 
+
+MRD4_S5_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD4_v2_S5_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD4_S5_metadata$Cell] 
+
+MRD5_S1_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S1_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD5_S1_metadata$Cell] 
+
+MRD5_S2_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S2_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD5_S2_metadata$Cell] 
+
+MRD5_S3_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S3_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD5_S3_metadata$Cell] 
+
+MRD5_S4_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S4_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD5_S4_metadata$Cell] 
+
+MRD5_S5_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD5_v2_S5_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD5_S5_metadata$Cell] 
+
+MRD6_S1_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S1_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD6_S1_metadata$Cell] 
+
+MRD6_S2_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S2_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD6_S2_metadata$Cell] 
+
+MRD6_S3_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S3_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD6_S3_metadata$Cell] 
+
+MRD6_S4_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S4_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD6_S4_metadata$Cell] 
+
+MRD6_S5_prot_mat<- read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/MRD6_v2_S5_protein_mat.csv") %>%  
+                   column_to_rownames(., var = "X") %>% .[, MRD6_S5_metadata$Cell] 
+
+```
+
+Combine metadata and protein data separately for all samples in MRD1, create a Seurat object, supply metadata, and then normalize the data using CLR transformation with margin = 2. This is repeated separately for MRD3-6 below.
+```{r}
+
+MRD1_metadata<- rbind(MRD1_S1_metadata, MRD1_S2_metadata) %>% 
+                rbind(., MRD1_S3_metadata) %>%
+                rbind(., MRD1_S4_metadata) %>%
+                rbind(., MRD1_S5_metadata) 
+
+MRD1_prot_data<- cbind(MRD1_S1_prot_mat, MRD1_S2_prot_mat) %>%
+                 cbind(., MRD1_S3_prot_mat) %>%
+                 cbind(., MRD1_S4_prot_mat) %>%
+                 cbind(., MRD1_S5_prot_mat) 
+
+MRD1_metadata$Run<- "MRD1"
+
+MRD1 <- CreateSeuratObject(counts=MRD1_prot_data, 
+                        assay="Protein")
+
+MRD1<- AddMetaData(object = MRD1,
+                 metadata = list("Clone"=MRD1_metadata%>%pull("Clone"),
+                                  "amplicons"=MRD1_metadata%>%pull("amplicons"),
+                                  "Label"=MRD1_metadata%>%pull("Label"), 
+                                  "Sample"=MRD1_metadata%>%pull("Sample"), 
+                                  "Run"=MRD1_metadata%>%pull("Run")))
+
+MRD1 <- NormalizeData(MRD1, assay = 'Protein', normalization.method = "CLR", margin = 2)
+
+
+```
+
+```{r}
+
+MRD3_metadata<- rbind(MRD3_S1_metadata, MRD3_S2_metadata) %>% 
+                rbind(., MRD3_S3_metadata) %>%
+                rbind(., MRD3_S4_metadata) %>%
+                rbind(., MRD3_S5_metadata) 
+
+MRD3_prot_data<- cbind(MRD3_S1_prot_mat, MRD3_S2_prot_mat) %>%
+                 cbind(., MRD3_S3_prot_mat) %>%
+                 cbind(., MRD3_S4_prot_mat) %>%
+                 cbind(., MRD3_S5_prot_mat) 
+
+MRD3_metadata$Run<- "MRD3"
+
+MRD3 <- CreateSeuratObject(counts=MRD3_prot_data, 
+                        assay="Protein")
+
+MRD3<- AddMetaData(object = MRD3,
+                 metadata = list("Clone"=MRD3_metadata%>%pull("Clone"),
+                                  "amplicons"=MRD3_metadata%>%pull("amplicons"),
+                                  "Label"=MRD3_metadata%>%pull("Label"), 
+                                  "Sample"=MRD3_metadata%>%pull("Sample"), 
+                                  "Run"=MRD3_metadata%>%pull("Run")))
+
+MRD3 <- NormalizeData(MRD3, assay = 'Protein', normalization.method = "CLR", margin = 2)
+
+```
+
+```{r}
+
+MRD4_metadata<- rbind(MRD4_S1_metadata, MRD4_S2_metadata) %>% 
+                rbind(., MRD4_S3_metadata) %>%
+                rbind(., MRD4_S4_metadata) %>%
+                rbind(., MRD4_S5_metadata) 
+
+MRD4_prot_data<- cbind(MRD4_S1_prot_mat, MRD4_S2_prot_mat) %>%
+                 cbind(., MRD4_S3_prot_mat) %>%
+                 cbind(., MRD4_S4_prot_mat) %>%
+                 cbind(., MRD4_S5_prot_mat) 
+
+MRD4_metadata$Run<- "MRD4"
+
+MRD4 <- CreateSeuratObject(counts=MRD4_prot_data, 
+                        assay="Protein")
+
+MRD4<- AddMetaData(object = MRD4,
+                 metadata = list("Clone"=MRD4_metadata%>%pull("Clone"),
+                                  "amplicons"=MRD4_metadata%>%pull("amplicons"),
+                                  "Label"=MRD4_metadata%>%pull("Label"), 
+                                  "Sample"=MRD4_metadata%>%pull("Sample"), 
+                                  "Run"=MRD4_metadata%>%pull("Run")))
+
+MRD4 <- NormalizeData(MRD4, assay = 'Protein', normalization.method = "CLR", margin = 2)
+
+```
+
+```{r}
+
+MRD5_metadata<- rbind(MRD5_S1_metadata, MRD5_S2_metadata) %>% 
+                rbind(., MRD5_S3_metadata) %>%
+                rbind(., MRD5_S4_metadata) %>%
+                rbind(., MRD5_S5_metadata) 
+
+MRD5_prot_data<- cbind(MRD5_S1_prot_mat, MRD5_S2_prot_mat) %>%
+                 cbind(., MRD5_S3_prot_mat) %>%
+                 cbind(., MRD5_S4_prot_mat) %>%
+                 cbind(., MRD5_S5_prot_mat) 
+
+MRD5_metadata$Run<- "MRD5"
+
+MRD5 <- CreateSeuratObject(counts=MRD5_prot_data, 
+                        assay="Protein")
+
+MRD5<- AddMetaData(object = MRD5,
+                 metadata = list("Clone"=MRD5_metadata%>%pull("Clone"),
+                                  "amplicons"=MRD5_metadata%>%pull("amplicons"),
+                                  "Label"=MRD5_metadata%>%pull("Label"), 
+                                  "Sample"=MRD5_metadata%>%pull("Sample"), 
+                                  "Run"=MRD5_metadata%>%pull("Run")))
+
+MRD5 <- NormalizeData(MRD5, assay = 'Protein', normalization.method = "CLR", margin = 2)
+
+```
+
+```{r}
+
+MRD6_metadata<- rbind(MRD6_S1_metadata, MRD6_S2_metadata) %>% 
+                rbind(., MRD6_S3_metadata) %>%
+                rbind(., MRD6_S4_metadata) %>%
+                rbind(., MRD6_S5_metadata) 
+
+MRD6_prot_data<- cbind(MRD6_S1_prot_mat, MRD6_S2_prot_mat) %>%
+                 cbind(., MRD6_S3_prot_mat) %>%
+                 cbind(., MRD6_S4_prot_mat) %>%
+                 cbind(., MRD6_S5_prot_mat) 
+
+MRD6_metadata$Run<- "MRD6"
+
+MRD6 <- CreateSeuratObject(counts=MRD6_prot_data, 
+                        assay="Protein")
+
+MRD6<- AddMetaData(object = MRD6,
+                 metadata = list("Clone"=MRD6_metadata%>%pull("Clone"),
+                                  "amplicons"=MRD6_metadata%>%pull("amplicons"),
+                                  "Label"=MRD6_metadata%>%pull("Label"), 
+                                  "Sample"=MRD6_metadata%>%pull("Sample"), 
+                                  "Run"=MRD6_metadata%>%pull("Run")))
+
+MRD6 <- NormalizeData(MRD6, assay = 'Protein', normalization.method = "CLR", margin = 2)
+
+```
+
+Merge the normalized seurat objects corresponding to each scMRD run.
+```{r, merge normalized seurat objects}
+
+  s<- merge(MRD1, y = c(MRD3, MRD4, MRD5, MRD6), add.cell.ids = c("1", "3", "4", "5", "6"), merge.data = TRUE)
+
+```
+
+Scale and center the data by "Run", and supply isotype controls as vars.to.regress to help correct for technical variability driven by background signal. 
+```{r}
+
+prots <- rownames(s@assays$Protein@data)[1:45]
+
+s <- ScaleData(s,split.by = "Run",
+               do.scale = TRUE,
+               do.center = TRUE,
+               vars.to.regress = c("IgG1", "IgG2a","IgG2b"))
+
+```
+
+Cluster data and run UMAP. Calculate the total number of cells in the data, as we will use the square root of the total cell number as the value for n.neighbors in `RunUMAP.`
+```{r}
+
+total_n_cells <- ncol(MRD1_prot_data) + ncol(MRD3_prot_data) + ncol(MRD4_prot_data) + ncol(MRD5_prot_data) + ncol(MRD6_prot_data)
+
+s <- FindNeighbors(object = s, 
+                   assay = 'Protein', 
+                   features = prots, 
+                   k.param = 30, 
+                   dims = NULL, 
+                   verbose = FALSE)
+
+s <- FindClusters(object = s, 
+                  resolution = 0.8, 
+                  algorithm = 3, 
+                  graph.name = 'Protein_snn', 
+                  verbose = FALSE)
+
+
+s <- RunUMAP(object = s, 
+             assay = "Protein", 
+             slot = "scale.data",
+             features = prots, 
+             seed.use = 1,
+             min.dist = 0.005, 
+             n.neighbors = sqrt(total_n_cells), 
+             verbose = FALSE)
+
+DimPlot(s,reduction = "umap", #plot the data, labeling by individual sample
+        group.by = "Sample",
+        cols = alpha(rev(rainbow(25)), 0.2),
+        pt.size = 1.5)+ 
+        ggtitle("UMAP Labeled by Sample")
+
+```
+  
+```{r}
+
+UMAP_by_run <- DimPlot(s,reduction = "umap", #label UMAP by run
+                       group.by = "Run",
+                       cols = alpha(rev(tol(6)), 0.2),
+                       pt.size = 1.5)+ 
+                       ggtitle("Labeled by MRD run")
+
+UMAP_by_run
+
+#ggsave(plot = UMAP_by_run, width = 8, height = 6, dpi = 500, filename = "UMAP_by_run_prot.tiff", device = "tiff")
+
+```
+
+Select a subset of clones of interest and generate a multi-UMAP plot to get a sense of where each clone clusters in UMAP space.
+```{r}
+
+clone_subset <- subset(x = s, subset = ( Label == "WT"| 
+                                         Label == "DNMT3A" | 
+                                         Label == "DNMT3A_IDH2"|
+                                         Label == "NRAS"|
+                                         Label == "TP53"|
+                                         Label == "NPM1"| 
+                                         Label == "DNMT3A_NPM1"|
+                                         Label == "IDH2"))
+
+umap_clone_subset <- DimPlot(clone_subset,reduction = "umap",
+                     group.by = "Label", 
+                     split.by = "Label",
+                     ncol = 2,
+                     pt.size = 1,
+                     order = c("DNMT3A_IDH2","DNMT3A_NPM1","IDH2","NPM1","TP53","NRAS", "DNMT3A", "WT" ))+
+                        scale_colour_manual(values = scales::alpha(c(
+                                          "WT" = "grey50",
+                                          "DNMT3A"="black",
+                                          "NRAS" = "#190E4F",
+                                          "TP53" = "#F24C00",
+                                          "NPM1"="#00A7E1",
+                                          "DNMT3A_NPM1"= "#5E548E", 
+                                          "IDH2"= "#840032", 
+                                          "DNMT3A_IDH2" = "forestgreen"),0.5))&NoLegend()&ggtitle("")&ylim(-4,4)&xlim(-4,4)
+                          
+
+
+umap_clone_subset
+
+#ggsave(plot = umap_clone_subset, width = 4.5, height = 8, dpi = 500, filename = "umap_clone_subset.tiff", device = "tiff")
+
+```
+
+Generate feature plots highlighting markers of interest. 
+```{r}
+
+umap_set1 <- FeaturePlot(s,features = c("CD3","CD11b", "CD117","CD34","CD16","CD64", "CD19","CD14","CD71"),keep.scale = "feature", slot = "scale.data") &
+             colorspace::scale_color_continuous_divergingx(palette = 'RdBu',
+                                                          rev=TRUE,
+                                                          na.value = "grey80")
+
+umap_set2 <- FeaturePlot(s,features = c("CD2", "CD4","CD5", "CD7","CD8", "CD22", "CD10", "CD13", "CD33"),keep.scale = "feature", slot = "scale.data") &
+             colorspace::scale_color_continuous_divergingx(palette = 'RdBu', 
+                                                          rev=TRUE,
+                                                          na.value = "grey80")
+
+umap_set3 <- FeaturePlot(s,c("CD11c", "CD163", "CD1c", "CD38","CD123","CD141","CD303","CD304","CD44" ),keep.scale = "feature", slot = "scale.data") &
+             colorspace::scale_color_continuous_divergingx(palette = 'RdBu', 
+                                                          rev=TRUE,
+                                                          na.value = "grey80")
+
+umap_set4 <- FeaturePlot(s,c("CD45","CD45RA","CD45RO","CD49d","CD62L", "CD62P", "CD69", "CD83", "CD56"),keep.scale = "feature", slot = "scale.data") &
+                colorspace::scale_color_continuous_divergingx(palette = 'RdBu', 
+                                                          rev=TRUE,
+                                                          na.value = "grey80")
+
+umap_set5 <- FeaturePlot(s,c("HLA.DR", "CD30", "CD25", "CD138", "CD90", "CD2", "CD2", "CD2", "CD2"),keep.scale = "feature", slot = "scale.data") &
+                colorspace::scale_color_continuous_divergingx(palette = 'RdBu', 
+                                                          rev=TRUE,
+                                                          na.value = "grey80")
+
+
+#ggsave(plot = umap_set1, width = 10, height = 8, dpi = 500, filename = "umap_set1.tiff", device = "tiff")
+#ggsave(plot = umap_set2, width = 10, height = 8, dpi = 500, filename = "umap_set2.tiff", device = "tiff")
+#ggsave(plot = umap_set3, width = 10, height = 8, dpi = 500, filename = "umap_set3.tiff", device = "tiff")
+#ggsave(plot = umap_set4, width = 10, height = 8, dpi = 500, filename = "umap_set4.tiff", device = "tiff")
+#ggsave(plot = umap_set5, width = 10, height = 8, dpi = 500, filename = "umap_set5.tiff", device = "tiff")
+
+```
+Run differential expression analysis using clone labels as identity. Here we are asking whether there are genotype-specific immunophenotypes in these data. 
+```{r}
+#Compound mutant comparisons
+
+Idents(object = s) <- "Label"
+
+DI_D <- FindMarkers(s, ident.1 = "DNMT3A_IDH2", ident.2 = "DNMT3A", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+D_DN <- FindMarkers(s, ident.1 = "DNMT3A_NPM1", ident.2 = "DNMT3A", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+D_WT <- FindMarkers(s, ident.1 = "DNMT3A", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+NP_WT <- FindMarkers(s, ident.1 = "NPM1", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+I2_WT <- FindMarkers(s, ident.1 = "IDH2", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+NP_DN <- FindMarkers(s, ident.1 = "NPM1", ident.2 = "DNMT3A_NPM1", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+NP_D <- FindMarkers(s, ident.1 = "NPM1", ident.2 = "DNMT3A", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+
+```
+
+
+Generate RidgePlot for a subset of clones to assess differences in expression of CD34 and CD11b
+```{r}
+
+Idents(object = s) <- "Label"
+
+s_copy2<- s
+my_levels <- c("WT", "DNMT3A", "IDH2", "NPM1", "DNMT3A_IDH2", "DNMT3A_NPM1" )
+Idents(s_copy2) <- factor(Idents(s_copy2), levels= my_levels)
+
+double_mut_hist <- RidgePlot(s_copy2,slot = "scale.data", features = c("CD34","CD11b"), idents = c(
+                                              "WT",
+                                             "DNMT3A",
+                                             "IDH2",
+                                             "NPM1",
+                                             "DNMT3A_NPM1", 
+                                             "DNMT3A_IDH2"), 
+          cols = scales::alpha(c("WT" = "grey50",
+                                 "DNMT3A"="black",
+                                 "NPM1"="#00A7E1",
+                                 "IDH2"= "#840032", 
+                                 "DNMT3A_NPM1"= "#5E548E", 
+                                 "DNMT3A_IDH2" = "forestgreen"
+                                 ),1),combine = TRUE, sort = FALSE, log =FALSE,  stack = TRUE, fill ="ident") &NoLegend()+
+                                theme(title = element_blank(),
+                                      axis.text.x = element_text(size = 12), 
+                                      axis.title.x = element_blank())
+
+
+double_mut_hist
+#ggsave(plot = double_mut_hist, width = 8, height = 5, dpi = 500, filename = "double_mut_hist.tiff", device = "tiff")
+
+```
+
+Generate Violin plots for a subset of clones to assess differences in expression of CD33, CD34, CD11b, and CD117
+```{r}
+
+double_mut_vln <- VlnPlot(s_copy2, features = c("CD34","CD33","CD11b", "CD117"), pt.size = 0.1, idents = c(
+                                              "WT",
+                                             "DNMT3A",
+                                             "IDH2",
+                                             "NPM1",
+                                             "DNMT3A_NPM1", 
+                                             "DNMT3A_IDH2"), 
+          cols = scales::alpha(c("WT" = "grey50",
+                                 "DNMT3A"="black",
+                                 "NPM1"="#00A7E1",
+                                 "IDH2"= "#840032", 
+                                 "DNMT3A_NPM1"= "#5E548E", 
+                                 "DNMT3A_IDH2" = "forestgreen"
+                                 ),0.9),combine = TRUE, sort = FALSE, log =TRUE,  stack = TRUE, fill ="ident") &NoLegend()+
+          theme(axis.text.x = element_text(size = 14), 
+                axis.title.x = element_blank(), 
+                axis.title.y = element_blank())
+
+double_mut_vln
+
+#ggsave(plot = double_mut_vln, width = 6, height = 6, dpi = 500, filename = "double_mut_vln.tiff", device = "tiff")
+
+```
+Comparison of marker expression between select single-mutant clones. 
+```{r}
+#Single mutant comparisons 
+
+U2AF1_WT <- FindMarkers(s, ident.1 = "U2AF1", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+TP53_WT <- FindMarkers(s, ident.1 = "TP53", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+KRAS_WT <- FindMarkers(s, ident.1 = "KRAS", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+NRAS_WT <- FindMarkers(s, ident.1 = "NRAS", ident.2 = "WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+
+```
+Generate Ridgeplots for single-mutant comparisons to assess differences in CD34 and CD117 expression.
+```{r}
+
+Idents(object = s) <- "Label"
+
+s_copy<- s
+my_levels <- c("WT", "NRAS", "KRAS", "TP53", "U2AF1" )
+Idents(s_copy) <- factor(Idents(s_copy), levels= my_levels)
+
+
+single_mut_hist <- RidgePlot(s_copy, slot = "scale.data",features = c("CD34","CD117"), idents = c(
+                                                 "NRAS",
+                                                 "KRAS",
+                                                 "TP53",
+                                                 "WT",
+                                                 "U2AF1"), 
+      cols = scales::alpha(c(viridis(5)),1),combine = TRUE, sort = FALSE, log =FALSE,  stack = TRUE, fill ="ident") &NoLegend()+
+  theme(title = element_blank(),
+        axis.text.x = element_text(size = 12), 
+        axis.title.x = element_blank())
+
+single_mut_hist
+
+# ggsave(plot = single_mut_hist, width = 8, height = 5, dpi = 500, filename = "single_mut_hist.tiff", device = "tiff")
+
+```
+
+Generate Violin plots for a subset of single-mutant clones to assess differences in expression of CD33, CD34, CD11b, and CD117
+
+```{r}
+
+single_mut_vln <- VlnPlot(s_copy, slot = "data", features = c("CD34", "CD33","CD11b", "CD117"), pt.size = 0.1,
+                                 idents = c("NRAS",
+                                            "KRAS",
+                                            "TP53",
+                                            "WT",
+                                            "U2AF1"), 
+                          cols = scales::alpha(c(viridis(6)),0.9),
+                          combine = TRUE, sort = FALSE, log =TRUE,  stack = TRUE, fill ="ident") &NoLegend()+
+                    theme(axis.text.x = element_text(size = 14), 
+                          axis.title.x = element_blank(), 
+                          axis.title.y = element_blank())
+
+single_mut_vln
+
+# ggsave(plot = single_mut_vln, width = 5, height = 6, dpi = 500, filename = "single_mut_vln.tiff", device = "tiff")
+
+```
+
+Tally the total number of cells per clone, so we can highlight these numbers on each respective plot. 
+```{r}
+
+clones_tally <- FetchData(object = s, vars = c("Label")) %>% table()
+clones_tally
+
+```
+
+Prepare data to generate a radar plot for 13 markers and 3 clones (DNMT3A, DNMT3A_NPM1, DNMT3A_IDH2).
+```{r}
+
+library(fmsb)
+
+clones_out_radar <- FetchData(object = s, slot = "data", vars = c("Label"))
+
+clones_out_subset_radar <- clones_out_radar %>% filter(Label == "DNMT3A"|
+                                                       Label == "DNMT3A_NPM1"|
+                                                       Label == "DNMT3A_IDH2") %>% rownames_to_column(., var = "Cell")
+                                                          
+
+prot_data_out_radar <- GetAssayData(object = s, slot = "data") %>% t() %>% as.data.frame() %>% rownames_to_column(., var = "Cell")
+prot_data_out_radar$Cell <- gsub("X", "", as.character(prot_data_out_radar$Cell))   
+      
+    
+clones_for_prot_radar <- merge(clones_out_subset_radar, prot_data_out_radar, by = "Cell") 
+
+radar_prot_subset <- clones_for_prot_radar %>% dplyr::select(c("Label", 
+                                                               "CD117","CD34","CD71","CD33",
+                                                               "CD11b","CD10","CD16","CD64",
+                                                               "CD2","CD3","CD4","CD5", "CD7",
+                                                               "CD56"))
+
+max_radar <- radar_prot_subset %>% summarise_if(is.numeric, max)
+min_radar <- radar_prot_subset %>% summarise_if(is.numeric, min)
+
+max_min_radar <- rbind(max_radar,min_radar )
+max_min_radar$Label <- c("Max","Min")
+
+radar_prot_mean <- radar_prot_subset %>% 
+                   group_by(Label) %>% 
+                   summarise_if(is.numeric, mean)
+
+radar_prot_subset_MM <- rbind(max_min_radar, radar_prot_mean) %>% 
+                        column_to_rownames(., var = "Label")
+
+
+
+radarchart(radar_prot_subset_MM, 
+          pcol = c("black", "forestgreen","#5E548E"), 
+          plty = "solid", 
+          pfcol = scales::alpha(c("black", "forestgreen", "#5E548E"), 0.25))
+
+legend(x=1.5, y=0.2, legend = rownames(radar_prot_subset_MM[-c(1,2),]), 
+       bty = "n", pch=20 , col=c("black", "forestgreen","#5E548E") , 
+       text.col = c("black", "forestgreen","#5E548E"), cex=1, pt.cex=1.5)
+
+
+```
+
+Analysis of MRD1-S4 for assessment of donor vs. host immunophenotype and comparison of expression plots to clinical flow cytometry data. 
+```{r}
+
+MRD1_S4_data <- FetchData(object = s, slot = "data", vars = c("Sample")) %>% 
+                dplyr::filter(Sample == "MRD1_S4") %>% rownames_to_column(., var = "Cell")
+                
+MRD1_S4_clones <- FetchData(object = s, slot = "data", vars = c("Label")) %>% 
+                  rownames_to_column(., var = "Cell") %>% 
+                  merge(., MRD1_S4_data, by = "Cell")
+
+
+MRD1_S4_prot_data_out<- GetAssayData(object = s, slot = "data") %>%  as.data.frame() %>% t() %>% as.data.frame() %>% rownames_to_column(., "Cell")
+
+MRD1_S4_clone_protein <- merge(MRD1_S4_clones, MRD1_S4_prot_data_out, by = "Cell") %>% 
+                         dplyr::select(c("Cell","Label", "CD2","CD3","CD5","CD8",
+                                        "CD33","CD123","CD69","CD13","CD117","CD71", 
+                                        "CD90", "IgG1","CD64","HLA.DR", "CD304", "CD303" )) %>%
+                         dplyr::filter(Label == "NPM1" | Label == "Donor_WT"| Label == "WT") %>%
+                         column_to_rownames(., var = "Cell")
+
+anno_df <- data.frame("Clone" = MRD1_S4_clone_protein$Label)
+rownames(anno_df) <- rownames(MRD1_S4_clone_protein)
+
+
+mycolors <-  c("gray90","firebrick", "#9381FF")
+names(mycolors) <- unique(anno_df$Clone)
+mycolors <- list(Clone = mycolors)
+
+MRD1_S4_hm <- pheatmap(t(MRD1_S4_clone_protein[3:ncol(MRD1_S4_clone_protein)]), 
+              show_rownames = TRUE,
+              show_colnames = FALSE,
+              annotation_col = anno_df, 
+              annotation_colors = mycolors,
+              scale = "row",
+              color=colorRampPalette(c("blue", "black", "red"))(1000))
+
+#ggsave(plot = MRD1_S4_hm, width = 5, height = 3, dpi = 500, filename = "MRD1_v2_S4_hm.tiff", device = "tiff")
+```
+
+```{r}
+MRD1_S4_clone_protein_all <- merge(MRD1_S4_clones, MRD1_S4_prot_data_out, by = "Cell") 
+
+
+CD34_CD117 <- ggplot(MRD1_S4_clone_protein_all, aes(x = CD117, y = CD34, fill = Label)) +
+              geom_point(shape = 21, alpha = 0.9, size = 2, color = "black")+
+              scale_fill_manual(values = c("Donor_WT" = "gray90", "NPM1" = "firebrick", "WT"=  "#9381FF"), 
+                                    labels = c("Donor_WT" = "Donor", "NPM1" = "Host_NPM1"))+
+              scale_color_manual(values = c("Donor_WT" = "gray90", "NPM1" = "firebrick"), 
+                                    labels = c("Donor_WT" = "Donor", "NPM1" = "Host_NPM1"))+
+              theme_classic()+
+              theme(plot.title = element_text(size = 16, hjust = 0.5))
+
+CD33_CD117 <- ggplot(MRD1_S4_clone_protein_all, aes(x = CD117, y = CD33, fill = Label)) +
+              geom_point(shape = 21, alpha = 0.9, size = 2, color = "black")+
+              scale_fill_manual(values = c("Donor_WT" = "gray90", "NPM1" = "firebrick", "WT"=  "#9381FF"), 
+                                    labels = c("Donor_WT" = "Donor", "NPM1" = "Host_NPM1"))+
+              scale_color_manual(values = c("Donor_WT" = "gray90", "NPM1" = "firebrick"), 
+                                    labels = c("Donor_WT" = "Donor", "NPM1" = "Host_NPM1"))+
+              theme_classic()+
+              theme(plot.title = element_text(size = 16, hjust = 0.5))
+
+
+prot_plot_grid <- plot_grid(CD34_CD117, CD33_CD117, ncol= 2 )
+  
+#ggsave(plot = prot_plot_grid, width = 7, height = 2, dpi = 500, filename = "MRD1_S4_prots.tiff", device = "tiff")
+
+#assess surface marker expression between NPM1-mut cells and Donor WT cells in MRD1_S4 only.
+MRD1_S4_object <- s[,s@meta.data[,"Sample"] == "MRD1_S4"]
+  
+NP_DonorWT <- FindMarkers(MRD1_S4_object, ident.1 = "NPM1", ident.2 = "Donor_WT", min.pct = 0.25, test.use = "wilcox") %>% dplyr::filter(p_val_adj <0.05)
+
+
+```
+
+
+Analysis of MRD4-S1 for comparison of expression plots to clinical flow cytometry data. 
+```{r}
+
+MRD4_S1_data <- FetchData(object = s, slot = "data", vars = c("Sample")) %>% 
+                dplyr::filter(Sample == "MRD4_S1") %>% rownames_to_column(., var = "Cell")
+                
+MRD4_S1_clones <- FetchData(object = s, slot = "data", vars = c("Label")) %>% 
+                  rownames_to_column(., var = "Cell") %>% 
+                  merge(., MRD4_S1_data, by = "Cell")
+
+MRD4_S1_prot_data_out <- GetAssayData(object = s, slot = "data") %>%  as.data.frame() %>% t() %>% as.data.frame() %>% rownames_to_column(., "Cell")
+
+MRD4_S1_clone_protein_all <- merge(MRD4_S1_clones, MRD4_S1_prot_data_out, by = "Cell") 
+
+MRD4_S1_CD34_CD117 <- ggplot(MRD4_S1_clone_protein_all, aes(x = CD117, y = CD34, fill = Label)) +
+                      geom_point(shape = 21, alpha = 0.9, size = 2, color = "black")+
+                      scale_fill_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                      scale_color_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                      theme_classic()+
+                      theme(plot.title = element_text(size = 16, hjust = 0.5))
+
+MRD4_S1_CD34_CD38 <- ggplot(MRD4_S1_clone_protein_all, aes(x = CD38, y = CD34, fill = Label)) +
+                     geom_point(shape = 21, alpha = 0.9, size = 2, color = "black")+
+                     scale_fill_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                     scale_color_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                     theme_classic()+
+                     theme(plot.title = element_text(size = 16, hjust = 0.5))
+ 
+MRD4_S1_CD34_CD5 <- ggplot(MRD4_S1_clone_protein_all, aes(x = CD5, y = CD34, fill = Label)) +
+                    geom_point(shape = 21, alpha = 0.9, size = 2, color = "black")+
+                    scale_fill_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                    scale_color_manual(values = c("Donor_WT" = "gray90", "DNMT3A_IDH2" = "firebrick", "DNMT3A"=  "dodgerblue"))+
+                    theme_classic()+
+                    theme(plot.title = element_text(size = 16, hjust = 0.5))
+
+prot_plot_grid_MRD4_S1 <- plot_grid(MRD4_S1_CD34_CD117, MRD4_S1_CD34_CD38, MRD4_S1_CD34_CD5, ncol= 3 )
+   
+#ggsave(plot = prot_plot_grid_MRD4_S1, width = 12, height = 2.5, dpi = 500, filename = "MRD4_S1_prots.tiff", device = "tiff")
+
+```
+
