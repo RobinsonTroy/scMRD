@@ -152,7 +152,7 @@ annotation_key%<>%inner_join(VariantAnnotation::select(hg19refseq_txdb,
 
 ```
 
-Read in the numerical genotyping (NGT) matrix from the H5 file, setting the desired cutoffs for mutation VAF (0.1%) and genotyping call rate (20%). This can take some time to load, so it is recommended to do this once and export the NGT as an RDS file for future use. I have previously exported the NGT matrix as an RDS, so I am just loading it here. H
+Read in the numerical genotyping (NGT) matrix from the H5 file, setting the desired cutoffs for mutation VAF (0.1%) and genotyping call rate (20%). This can take some time to load, so it is recommended to do this once and export the NGT as an RDS file for future use. I have previously exported the NGT matrix as an RDS, so I am just loading it here. 
 ```{r, NGT extraction, message=FALSE}
 
 # NGT <- read_tapestri_h5_NGT(file,
