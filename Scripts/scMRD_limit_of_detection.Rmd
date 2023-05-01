@@ -1,0 +1,342 @@
+---
+title: "scMRD_limit_of_detection"
+author: "TR"
+date: "2023-05-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Here you'll find code used to detect mutant cells in the limit of detection study we conducted as a part of this project. The sequencing run analyzed here is "LOD10k". 
+```{r}
+
+library(tidyverse)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(umap)
+library(pals)
+library(cluster)
+library(ClusterR)
+library(pheatmap)
+library(superheat)
+library(cultevo)
+library(VariantAnnotation)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(data.table)
+
+file<- c("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX_scDNA_h5_files/WX_LOD10K.dna+protein.h5")
+
+```
+
+Load in the manually curated transcript ID table and annotation key. More detailed information for generating the transcript ID table can be found here: https://bowmanr.github.io/scDNA_myeloid/hdf5-and-loom-input.html (this is also overall an excellent resource for scDNA+protein analysis). 
+```{r}
+
+annotation_key <-read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/annotation_key_RUNX1C_geneid.csv")
+    annotation_key$GENEID<- NULL
+
+hg19refseq_txdb<-loadDb("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/hg19refseq_txdb_new.sqlite")
+
+annotation_key%<>%inner_join(VariantAnnotation::select(hg19refseq_txdb,
+                                    keys=annotation_key$ccds_id,
+                                    columns=c("TXID","TXNAME"),
+                                    keytype = "TXNAME"),
+                             by=c("ccds_id"="TXNAME"))%>%
+                  mutate(TXID=as.character(TXID))
+
+```
+Read in the numerical genotyping (NGT) matrix from the H5 file, setting the desired cutoffs for mutation VAF (0%; we don't want to exclude ANY variants) and genotyping call rate (20%). This can take some time to load, so it is recommended to do this once and export the NGT as an RDS file for future use. I have previously exported the NGT matrix as an RDS, so I am just loading it here.
+```{r, NGT extraction}
+
+# read_tapestri_h5_NGT <-  function (file, VAF_cutoff = 0.005, GT_cutoff = 20) 
+#                         {
+#                             NGT <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT")
+#                             NGT[NGT == 3] <- NA
+#                             VAF_select <- which(apply(NGT, MARGIN = 1, function(x) {
+#                                 (sum(!is.na(x))/length(x)) * 100 >= GT_cutoff & (sum(x, 
+#                                     na.rm = TRUE)/(sum(!is.na(x)) * 2)) >= VAF_cutoff
+#                             }))
+#                             NGTlim <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT", 
+#                                 index = list(VAF_select, NULL))
+#                             NGTlim[NGTlim == 3] <- NA
+#                             rownames(NGTlim) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id", 
+#                                 index = list(VAF_select))
+#                             colnames(NGTlim) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ra/barcode")
+#                             return(NGTlim)
+#                         }
+# 
+# NGT<-read_tapestri_h5_NGT(file,
+#                           VAF_cutoff = 0,
+#                           GT_cutoff = 20 )
+
+# saveRDS(NGT, file = "LOD_10K_NGT.rds")
+
+NGT<- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/LOD_10K_NGT.rds")
+
+```
+
+Filter the NGT matrix based on the recommended cutoffs. This will get rid of low quality genotypes based on read depth (DP), genotype quality score (GQ), and allele frequency (AF). 
+```{r}
+
+# quality_filter_NGT <- function (file, NGT, DP_cut = 10, AF_cut = 20, GQ_cut = 20) 
+#                       {
+#                           variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+#                           select_variants <- match(rownames(NGT), variants)
+#                           AF <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/AF", 
+#                               index = list(select_variants, NULL))
+#                           DP <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/DP", 
+#                               index = list(select_variants, NULL))
+#                           GQ <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/GQ", 
+#                               index = list(select_variants, NULL))
+#                           NGT_filter <- data.frame(setNames(data.frame(AF, variants = rownames(NGT)), 
+#                               c(tidyselect::all_of(colnames(NGT)), "variants")) %>% 
+#                               tidyr::pivot_longer(cols = !c(variants), names_to = "Cell", 
+#                                   values_to = "AF"), data.frame(DP) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+#                               names_to = "Cell", values_to = "DP") %>% dplyr::select(DP), 
+#                               data.frame(GQ) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+#                                   names_to = "Cell", values_to = "GQ") %>% dplyr::select(GQ), 
+#                               data.frame(NGT) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+#                                   names_to = "Cell", values_to = "NGT") %>% dplyr::select(NGT)) %>% 
+#                               dplyr::filter(DP >= DP_cut & GQ >= GQ_cut) %>% dplyr::mutate(pass = dplyr::case_when(NGT == 
+#                               1 & (AF > AF_cut) & (AF < (100 - AF_cut)) ~ "include", 
+#                               NGT == 1 & ((AF <= AF_cut) | (AF >= (100 - AF_cut))) ~ 
+#                                   "exclude", NGT == 2 & AF >= (100 - AF_cut) ~ "include", 
+#                               NGT == 2 & AF < (100 - AF_cut) ~ "exclude", NGT == 0 & 
+#                                   AF <= AF_cut ~ "include", NGT == 0 & AF > AF_cut ~ 
+#                                   "exclude", TRUE ~ "other")) %>% dplyr::filter(.data$pass == 
+#                               "include") %>% tidyr::pivot_wider(id_cols = .data$Cell, 
+#                               names_from = .data$variants, values_from = .data$NGT)
+#                           return(NGT_filter)
+#                       }
+# 
+# filtered_NGT<-quality_filter_NGT(file=file,
+#                                  NGT=NGT,
+#                                  DP_cut=10,
+#                                  AF_cut=20,
+#                                  GQ_cut=30)
+
+# saveRDS(filtered_NGT, file = "LOD_10K_filtered_NGT.rds")
+filtered_NGT<- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/LOD_10K_filtered_NGT.rds")
+
+```
+
+Format data and annotate variants using the `GenomicRanges` and `VariantAnnotation` packages.
+```{r, variant annotation}
+
+variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id") #all variants
+select_variants <- setdiff(colnames(filtered_NGT), "Cell") #variants in the NGT (influenced by VAF and GT cutoffs)
+
+SNV_mat <- data.frame(do.call(cbind, rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/"))) %>%
+                      dplyr::filter(.data$id %in% tidyselect::all_of(select_variants))%>% 
+                      dplyr::mutate(ALT = gsub("\\*","N", .data$ALT))%>% 
+                      dplyr::mutate(REF = gsub("\\*","N", .data$REF))%>% 
+                      dplyr::mutate(CHROM = paste0("chr",.data$CHROM)) 
+
+SNV_mat$REF <- as(SNV_mat$REF, "DNAStringSet")
+SNV_mat$ALT <- as(SNV_mat$ALT, "DNAStringSet")
+
+variant_gRange <- GenomicRanges::makeGRangesFromDataFrame(SNV_mat, 
+                  seqnames.field = "CHROM", start.field = "POS", end.field = "POS", 
+                  keep.extra.columns = TRUE)
+  
+variant_gRange$QUERYID <- 1:length(variant_gRange)
+
+all_variants <- VariantAnnotation::locateVariants(query = variant_gRange, 
+                                                           subject = hg19refseq_txdb, region = 
+                                                           VariantAnnotation::AllVariants()) %>% 
+                                                           data.frame()
+
+coding_variants <- VariantAnnotation::predictCoding(query = variant_gRange, 
+                                                    subject = hg19refseq_txdb, 
+                                                    seqSource = Hsapiens, varAllele = variant_gRange$ALT) %>%
+                                                    data.frame()
+                                                    coding_variants$LOCATION<- "coding"                                  
+    
+intronic_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) != c("coding")) %>%
+                                    plyranges::filter(as.character(.data$LOCATION) != c("promoter")) %>%
+                                    dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+spliceSite_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) == c("spliceSite")) %>%
+                                    dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+splice_intronic<- dplyr::bind_rows(intronic_variants, spliceSite_variants)
+
+   
+out <- dplyr::bind_rows(splice_intronic, coding_variants) %>% 
+       dplyr::inner_join(annotation_key) %>% 
+       dplyr::mutate(AA = case_when(
+          .data$CONSEQUENCE == "nonsynonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "frameshift" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "nonsense" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "synonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "not translated" ~ paste0(.data$gene_name, ".not_txl"),
+          .data$LOCATION == "spliceSite" ~ paste0(.data$gene_name, ".splice"),
+          .data$LOCATION == "intron" ~ paste0(.data$gene_name, ".intron")))
+
+```
+
+Aggregate the annotated variant information, bulk VAF, genotyping call rate, etc. into a dataframe named `final_mutation_info`.
+```{r, final mutation info}
+
+final_mutation_info <- data.frame(Bulk_VAF = apply(filtered_NGT %>% 
+                                  dplyr::select(!.data$Cell), MARGIN = 2, function(x) {
+                                  (sum(x, na.rm = TRUE)/(sum(!is.na(x)) * 2)) * 100
+                                  }), GT_call_rate = apply(filtered_NGT %>% dplyr::select(!.data$Cell), 
+                                  MARGIN = 2, function(x) {
+                                  100 - (sum(is.na(x))/length(x) * 100)
+                                  }), id = colnames(filtered_NGT)[colnames(filtered_NGT) !="Cell"])%>% 
+                                  dplyr::inner_join(out, by = "id")
+
+```
+
+We have upfront knowledge of the pathogenic variants we expect to find. We can search the `final_mutation_info` dataframe by amino acid and pull out the genomic id for each variant. These are listed below.
+```{r, variants of interest}
+
+#NRAS.G12D:  chr1:115258747:C/T (Sample 1)
+#RUNX1.247: chr21:36206773:G/GA (Sample 1)
+#IDH2.R140Q: chr15:90631934:C/T (Sample 2 and 3)
+#JAK2.V617F: chr9:5073770:G/T (Sample 2)
+#DNMT3A.751: chr2:25463242:A/ACCCC (Sample 2)
+
+```
+
+We also know that one of the spike-in samples (sample 3) has two private SNPs. We will store these as `identifier_variants`, and the pathogenic variants as `pathogenic_variants`.
+```{r}
+
+identifier_variants<- final_mutation_info %>% dplyr::filter(AA == "TET2.P1723S"| AA == "CHEK2.T387I") 
+
+pathogenic_variants<- final_mutation_info %>% subset(id %in% c("chr1:115258747:C/T",
+                                                               "chr21:36206773:G/GA", 
+                                                               "chr15:90631934:C/T",
+                                                               "chr9:5073770:G/T",
+                                                               "chr2:25463242:A/ACCCC")) 
+
+variant_list <- rbind(identifier_variants, pathogenic_variants )
+
+```
+
+Select cells with individual mutations of interest and store these cells into separate data frames. 
+```{r}
+
+NRAS_NGT <- filtered_NGT[(filtered_NGT$`chr1:115258747:C/T` == 1 | filtered_NGT$`chr1:115258747:C/T` == 2),] %>% #select cells with NRAS mut
+                          dplyr::select(c("Cell",pathogenic_variants$id,identifier_variants$id)) %>%
+                          dplyr::filter(!is.na(.$Cell)) %>% column_to_rownames(., var = "Cell")
+
+RUNX1_NGT <- filtered_NGT[(filtered_NGT$`chr21:36206773:G/GA` == 1 | filtered_NGT$`chr21:36206773:G/GA` == 2),] %>% #select cells with RUNX1 mut
+                          dplyr::select(c("Cell",pathogenic_variants$id,identifier_variants$id)) %>%
+                          dplyr::filter(!is.na(.$Cell)) %>% column_to_rownames(., var = "Cell")
+
+IDH2_NGT <- filtered_NGT[(filtered_NGT$`chr15:90631934:C/T` == 1 | filtered_NGT$`chr15:90631934:C/T` == 2),] %>% #select cells with IDH2 mut
+                          dplyr::select(c("Cell",pathogenic_variants$id,identifier_variants$id)) %>%
+                          dplyr::filter(!is.na(.$Cell)) %>% column_to_rownames(., var = "Cell")
+
+JAK2_NGT <- filtered_NGT[(filtered_NGT$`chr9:5073770:G/T` == 1 | filtered_NGT$`chr9:5073770:G/T` == 2),] %>% #select cells with JAK2 mut
+                          dplyr::select(c("Cell",pathogenic_variants$id,identifier_variants$id)) %>%
+                          dplyr::filter(!is.na(.$Cell)) %>% column_to_rownames(., var = "Cell")
+
+DNMT3A_NGT <- filtered_NGT[(filtered_NGT$`chr2:25463242:A/ACCCC` == 1 | filtered_NGT$`chr2:25463242:A/ACCCC` == 2),] %>% #select cells with DNMT3A mut
+                          dplyr::select(c("Cell",pathogenic_variants$id,identifier_variants$id)) %>%
+                          dplyr::filter(!is.na(.$Cell)) %>% column_to_rownames(., var = "Cell")
+
+#if NA, convert to 3, this is necessary for plotting later
+NRAS_NGT[is.na(NRAS_NGT)]<-3 
+RUNX1_NGT[is.na(RUNX1_NGT)]<-3
+IDH2_NGT[is.na(IDH2_NGT)]<-3
+JAK2_NGT[is.na(JAK2_NGT)]<-3
+DNMT3A_NGT[is.na(DNMT3A_NGT)]<-3
+
+```
+
+Convert the column names for each mutation_NGT from id to amino acid - this is for ease of visualization in the heatmaps below.
+```{r}
+
+heatmap_mutations<- rbind(pathogenic_variants,identifier_variants) %>% dplyr::filter(!duplicated(id))
+
+setnames(NRAS_NGT, c(heatmap_mutations$id), c(heatmap_mutations$AA))
+setnames(RUNX1_NGT, c(heatmap_mutations$id), c(heatmap_mutations$AA))
+setnames(IDH2_NGT, c(heatmap_mutations$id), c(heatmap_mutations$AA))
+setnames(JAK2_NGT, c(heatmap_mutations$id), c(heatmap_mutations$AA))
+setnames(DNMT3A_NGT, c(heatmap_mutations$id), c(heatmap_mutations$AA))
+
+```
+
+Bind the data together, making sure to remove duplicated cells.
+```{r}
+
+NRAS_NGT <- NRAS_NGT %>% rownames_to_column(., var = "Cell")
+RUNX1_NGT <- RUNX1_NGT %>% rownames_to_column(., var = "Cell")
+IDH2_NGT <- IDH2_NGT %>% rownames_to_column(., var = "Cell")
+JAK2_NGT <- JAK2_NGT %>% rownames_to_column(., var = "Cell")
+DNMT3A_NGT <- DNMT3A_NGT %>% rownames_to_column(., var = "Cell")
+
+cells_for_heatmap<- rbind(NRAS_NGT, RUNX1_NGT) %>%
+                    rbind(., IDH2_NGT) %>%
+                    rbind(., JAK2_NGT) %>%
+                    rbind(., DNMT3A_NGT) %>% 
+                    dplyr::filter(!duplicated(Cell)) %>% 
+                    column_to_rownames(., var = "Cell")
+
+```
+Bin cells into samples based on co-occurrence patterns of pathogenic mutations and SNPs.
+```{r}
+
+Sample1 <- cells_for_heatmap %>% 
+           dplyr::filter((TET2.P1723S == 0 | TET2.P1723S == 3) & (CHEK2.T387I == 0 | CHEK2.T387I == 3) &
+                        ((NRAS.G12D == 1 |NRAS.G12D == 2) & (RUNX1.247 ==1 | RUNX1.247 ==2))) #must have both NRAS and RUNX1 mutations 
+
+Sample2 <- cells_for_heatmap %>%
+           dplyr::filter((TET2.P1723S == 0 | TET2.P1723S == 3) & (CHEK2.T387I == 0 | CHEK2.T387I == 3) &
+                         (IDH2.R140Q == 1 | IDH2.R140Q == 2) & (DNMT3A.751 == 1 |DNMT3A.751 == 2 )| #must have IDH2 & DNMT3A, or IDH2 & JAK2, or JAK2 & DNMT3A
+                         (IDH2.R140Q == 1 | IDH2.R140Q == 2) & (JAK2.V617F == 1 |JAK2.V617F == 2 )|
+                         (DNMT3A.751 == 1 | DNMT3A.751 == 2) & (JAK2.V617F == 1 |JAK2.V617F == 2 ))
+
+Sample3 <- cells_for_heatmap %>%  #must have both SNPs and IDH2 mutation
+            dplyr::filter((TET2.P1723S == 1 |TET2.P1723S == 2) & (CHEK2.T387I ==1 | CHEK2.T387I ==2) & (IDH2.R140Q == 1 | IDH2.R140Q == 2))
+
+Sample1$Group<- "1"
+Sample2$Group<- "2"
+Sample3$Group<- "3"
+
+samples_all<- rbind(Sample1, Sample2) %>%
+              rbind(., Sample3)
+
+samples_all$Group <- samples_all$Group %>% as.numeric()
+
+samples_all_plotting <- samples_all %>% dplyr::select(c(NRAS.G12D, RUNX1.247,DNMT3A.751,JAK2.V617F, IDH2.R140Q, CHEK2.T387I, TET2.P1723S,IDH2.R140Q )) %>% 
+                        rename("DNMT3A.751" = "DNMT3A.F751fs", #renaming for the purpose of clarity
+                               "RUNX1.247" = "RUNX1.P247fs") #renaming for the purpose of clarity
+
+```
+
+Plot heatmap to visualize co-localization of mutations in cells from each sample.
+```{r}
+
+               pheatmap(t(samples_all_plotting), show_rownames = TRUE, 
+               show_colnames = FALSE, 
+               cluster_cols = FALSE, 
+               cluster_rows = FALSE, 
+               treeheight_col = 0, 
+               treeheight_row = 0, 
+               cellwidth = 5, 
+               cellheight = 15,
+               gaps_col = c(18, 64),
+               gaps_row = c(5),
+               border_color = c("black"),
+               color = c("#E5DADA","#840032","#002642","#7D8491"))
+
+```
+Tally number of cells detected for each sample.
+```{r}
+
+ncells_WT <- filtered_NGT %>% subset(!(Cell %in% rownames(samples_all))) %>% nrow() %>% as.data.frame() %>% rename("." = "WT")
+ncells_NRAS_RUNX1 <- Sample1 %>% nrow() %>% as.data.frame() %>% rename("." = "NRAS_RUNX1")
+ncells_IDH2 <- Sample2 %>% nrow() %>% as.data.frame() %>% rename("." = "IDH2")
+ncells_JAK2_IDH2_DNMT3A <- Sample3 %>% nrow() %>% as.data.frame() %>% rename("." = "JAK2_IDH2_DNMT3A")
+
+ncells <- cbind(ncells_NRAS_RUNX1, ncells_IDH2) %>%
+          cbind(., ncells_JAK2_IDH2_DNMT3A) %>% 
+          cbind(., ncells_WT) %>%reshape2::melt(.)
+
+
+ncells
+
+```
