@@ -100,14 +100,14 @@ coding_variants <- VariantAnnotation::predictCoding(query = variant_gRange,
                                                     data.frame()
                                                     coding_variants$LOCATION<- "coding"                                  
     
-intronic_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) != c("coding")) %>%
+intronic_variants <- all_variants %>% plyranges::filter(as.character(.data$LOCATION) != c("coding")) %>%
                                     plyranges::filter(as.character(.data$LOCATION) != c("promoter")) %>%
                                     dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
 
-spliceSite_variants<-all_variants %>% plyranges::filter(as.character(.data$LOCATION) == c("spliceSite")) %>%
+spliceSite_variants <- all_variants %>% plyranges::filter(as.character(.data$LOCATION) == c("spliceSite")) %>%
                                     dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
 
-splice_intronic<- dplyr::bind_rows(intronic_variants, spliceSite_variants)
+splice_intronic <- dplyr::bind_rows(intronic_variants, spliceSite_variants)
 
    
 out <- dplyr::bind_rows(splice_intronic, coding_variants) %>% 
@@ -145,12 +145,12 @@ Here we will search for specific variants we expect to find this sample based on
 final_mutation_info$AA[final_mutation_info$AA == "NPM1.287"]<- "NPM1.W288Cfs" 
 final_mutation_info$AA[final_mutation_info$AA == "RUNX1.118"]<- "RUNX1.V119Gfs" 
 
-required_variants<- final_mutation_info%>%
-                    filter(grepl("NRAS.G13D|RUNX1.V119Gfs|KRAS.Q61P|NRAS.G12V|IDH2.R140Q",AA)) %>%
-                    filter(GT_call_rate > 50) %>%
-                    filter(CONSEQUENCE%in%c("nonsynonymous","frameshift","nonsense")) %>%
-                    dplyr::select(id,Bulk_VAF,GT_call_rate,AA) %>% 
-                    pull(id)
+required_variants <- final_mutation_info%>%
+                     filter(grepl("NRAS.G13D|RUNX1.V119Gfs|KRAS.Q61P|NRAS.G12V|IDH2.R140Q",AA)) %>%
+                     filter(GT_call_rate > 50) %>%
+                     filter(CONSEQUENCE%in%c("nonsynonymous","frameshift","nonsense")) %>%
+                     dplyr::select(id,Bulk_VAF,GT_call_rate,AA) %>% 
+                     pull(id)
 
 ```
 
@@ -176,7 +176,7 @@ coding_variants <- final_mutation_info %>%
                    dplyr::select(id,Bulk_VAF,GT_call_rate,AA)%>% #break here to observe full table with mutation information of interest
                    pull(id)
 
-mut_info_annotated<-  filtered_NGT %>%
+mut_info_annotated <- filtered_NGT %>%
                       pivot_longer(cols=-Cell,names_to="id",values_to = "NGT") %>% 
                       filter(!is.na(NGT)) %>% 
                       filter(id%in%coding_variants) %>% 
