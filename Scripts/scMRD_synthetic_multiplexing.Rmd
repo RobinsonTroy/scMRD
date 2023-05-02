@@ -1,0 +1,1702 @@
+---
+title: "scMRD_synthetic_multiplexing"
+author: "TR"
+date: "2023-05-02"
+output: html_document
+---
+
+Here you'll find code we used to conduct a synthetic multiplexing control experiment. Samples A-E are from AML samples that were sequenced via the Tapestri scDNA+protein platform independently (unsorted and non-multiplexed). Each sample was processed separately to assess clonal architecture (see "scMRD_clonal_analysis_syth_mult" for details on this) and a single clone from each sample was extracted. 
+```{r, message=FALSE}
+
+library(tidyverse)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(umap)
+library(pals)
+library(cluster)
+library(ClusterR)
+library(pheatmap)
+library(superheat)
+library(cultevo)
+library(cowplot)
+library(lsa)
+library(factoextra)
+library(NbClust)
+library(VariantAnnotation)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(pdist)
+library(ggplot2)
+library(RColorBrewer)
+
+```
+
+Import NGT and AF matrices for the clones from each sample. 
+```{r}
+
+Sample_A_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_A_clone_NGT_scMRD.rds")
+Sample_B_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_B_clone_NGT_scMRD.rds")
+Sample_C_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_C_clone_NGT_scMRD.rds")
+Sample_D_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_D_clone_NGT_scMRD.rds")
+Sample_E_NGT <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_E_clone_NGT_scMRD.rds")
+
+
+Sample_A_AF <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_A_clone_AF_scMRD.rds")
+Sample_B_AF <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_B_clone_AF_scMRD.rds")
+Sample_C_AF <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_C_clone_AF_scMRD.rds")
+Sample_D_AF <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_D_clone_AF_scMRD.rds")
+Sample_E_AF <- readRDS(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_E_clone_AF_scMRD.rds")
+
+nrow(Sample_A_NGT)
+nrow(Sample_B_NGT)
+nrow(Sample_C_NGT)
+nrow(Sample_D_NGT)
+nrow(Sample_E_NGT)
+
+```
+
+Label each barcode in the NGT/AF matrices according to the sample ID; this is crucial for tracking cells throughout the analysis. 
+```{r}
+
+Sample_A_NGT$Cell <- paste0("A-",Sample_A_NGT$Cell)
+Sample_B_NGT$Cell <- paste0("B-",Sample_B_NGT$Cell)
+Sample_C_NGT$Cell <- paste0("C-",Sample_C_NGT$Cell)
+Sample_D_NGT$Cell <- paste0("D-",Sample_D_NGT$Cell)
+Sample_E_NGT$Cell <- paste0("E-",Sample_E_NGT$Cell)
+
+
+Sample_A_AF$Cell <- paste0("A-",Sample_A_AF$Cell)
+Sample_B_AF$Cell <- paste0("B-",Sample_B_AF$Cell)
+Sample_C_AF$Cell <- paste0("C-",Sample_C_AF$Cell) 
+Sample_D_AF$Cell <- paste0("D-",Sample_D_AF$Cell) 
+Sample_E_AF$Cell <- paste0("E-",Sample_E_AF$Cell) 
+
+```
+
+Create a column with Sample ID - this will be important for plotting later.
+```{r}
+
+Sample_A_NGT$Sample <- "A"
+Sample_B_NGT$Sample <- "B"
+Sample_C_NGT$Sample <- "C"
+Sample_D_NGT$Sample <- "D"
+Sample_E_NGT$Sample <- "E"
+
+Sample_A_AF$Sample <- "A"
+Sample_B_AF$Sample <- "B"
+Sample_C_AF$Sample <- "C"
+Sample_D_AF$Sample <- "D"
+Sample_E_AF$Sample <- "E"
+
+```
+
+Read in annotated mutations for each individual scDNA run and then bind together to create a data frame with all mutation info. 
+```{r}
+
+Sample_A_mutation_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_A_mutations_all.csv", row.names = "X") 
+
+Sample_B_mutation_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_B_mutations_all.csv", row.names = "X") 
+
+Sample_C_mutation_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_C_mutations_all.csv", row.names = "X") 
+
+Sample_D_mutation_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_D_mutations_all.csv", row.names = "X") 
+
+Sample_E_mutation_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_E_mutations_all.csv", row.names = "X") 
+
+all_mutation_info <- rbind(Sample_A_mutation_info, Sample_B_mutation_info) %>% 
+                     rbind(., Sample_C_mutation_info) %>%
+                     rbind(., Sample_D_mutation_info) %>% 
+                     rbind(., Sample_E_mutation_info) %>% 
+                     dplyr::select(c(AA, id))
+
+```
+
+Join all of the sample NGT matrices together, and all of the AF matrices together. These data frames will contain all cells and all variants covered in any run. 
+```{r,}
+
+master_NGT <- suppressMessages(full_join(Sample_A_NGT, Sample_B_NGT) %>%
+              full_join(., Sample_C_NGT) %>%
+              full_join(., Sample_D_NGT) %>%
+              full_join(., Sample_E_NGT))
+
+master_AF <- suppressMessages(full_join(Sample_A_AF, Sample_B_AF) %>%
+             full_join(., Sample_C_AF) %>%
+             full_join(., Sample_D_AF) %>%
+             full_join(., Sample_E_AF))
+
+dim(master_NGT)
+dim(master_AF)
+
+```
+
+Read in annotated SNP info for each individual scDNA run and filter out variants that were genotyped in fewer than 50% of cells. 
+```{r}
+
+Sample_A_SNP_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_A_SNPs_all.csv", row.names = "X") %>% dplyr::filter(GT_call_rate > 50)
+
+Sample_B_SNP_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_B_SNPs_all.csv", row.names = "X") %>% dplyr::filter(GT_call_rate > 50)
+
+Sample_C_SNP_info <- read.csv(file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_C_SNPs_all.csv", row.names = "X") %>% dplyr::filter(GT_call_rate > 50)
+
+Sample_D_SNP_info <- read.csv(file ="/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_D_SNPs_all.csv", row.names = "X") %>% dplyr::filter(GT_call_rate > 50)
+
+Sample_E_SNP_info <- read.csv(file ="/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/Synthetic_Multiplexing_scMRD/Sample_E_SNPs_all.csv",row.names = "X") %>% dplyr::filter(GT_call_rate > 50)
+
+```
+
+We'll need to select germline SNPs that were genotyped in every individual scDNA run so that we can perform synthetic multiplexing. 
+First, we'll determine all SNPs that were genotyped in each run, named `common_SNPs`
+```{r}
+
+common_SNPs <- intersect(Sample_A_SNP_info$id, Sample_B_SNP_info$id) %>% 
+               intersect(., Sample_C_SNP_info$id) %>% 
+               intersect(., Sample_D_SNP_info$id) %>% 
+               intersect(., Sample_E_SNP_info$id) %>% 
+               as.data.frame() %>% rename(. = "id")
+
+dim(common_SNPs)
+
+```
+
+This tells us that 631 common SNPs were genotyped in each of the 5 AML samples. We'll subset the AF matrices for these common SNPs and merge all cells to form a new matrix called `common_SNPs_AF`.
+```{r}
+
+Sample_A_common_SNPs_AF <- Sample_A_AF %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_B_common_SNPs_AF <- Sample_B_AF %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_C_common_SNPs_AF <- Sample_C_AF %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_D_common_SNPs_AF <- Sample_D_AF %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_E_common_SNPs_AF <- Sample_E_AF %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+
+common_SNPs_AF <- rbind(Sample_A_common_SNPs_AF,Sample_B_common_SNPs_AF) %>% 
+                  rbind(., Sample_C_common_SNPs_AF) %>% 
+                  rbind(., Sample_D_common_SNPs_AF) %>%
+                  rbind(., Sample_E_common_SNPs_AF)
+
+dim(common_SNPs_AF)
+
+```
+
+We'll repeat the above chunk with NGTs instead to form a new matrix called `common_SNPs_NGT`. 
+```{r}
+
+Sample_A_common_SNPs_NGT <- Sample_A_NGT %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_B_common_SNPs_NGT <- Sample_B_NGT %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_C_common_SNPs_NGT <- Sample_C_NGT %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_D_common_SNPs_NGT <- Sample_D_NGT %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+Sample_E_common_SNPs_NGT <- Sample_E_NGT %>% column_to_rownames(., var = "Cell") %>% dplyr::select(c(common_SNPs$id, Sample))
+
+common_SNPs_NGT <- rbind(Sample_A_common_SNPs_NGT, Sample_B_common_SNPs_NGT) %>% 
+                   rbind(., Sample_C_common_SNPs_NGT) %>% 
+                   rbind(., Sample_D_common_SNPs_NGT) %>%
+                   rbind(., Sample_E_common_SNPs_NGT)
+
+dim(common_SNPs_NGT)
+
+```
+
+
+Real multiplexed runs contain doublets arising from two cells from different samples entering the same droplet (referred to hereafter as heterotypic doublets). These heterotypic doublets do not exist in this synthetic multiplexing experiment, so instead we have to generate them and spike them into the data. To do this, we will randomly sample our data to create a pool of cells with equal representation from each cluster. From this pool, we will select two cells at random, average their SNP allele frequencies, and intermix these doublets with real cells. 
+
+Randomly sample 500 cells from each AML sample and pool them together into a new data frame for a total of 2,000 cells to generate doublets from. 
+```{r}
+set.seed(1)
+
+common_SNPs_AF_list <- common_SNPs_AF %>% split(common_SNPs_AF$Sample) #split dataframe into a list of cells in each sample
+
+sampled_pool_list <- lapply(common_SNPs_AF_list,  function(df){ 
+                                          sampled_cells <- df %>% 
+                                                          dplyr::select(!c("Sample")) %>%
+                                                          .[sample(nrow(.), 500), ] 
+                                                          return(sampled_cells)
+                                          }) 
+
+sampled_pool <- sampled_pool_list %>% do.call(rbind,.) #combines sampled cells into a single data frame
+dim(sampled_pool)
+
+```
+
+These functions enable us to sample real cells and generate doublets.
+```{r}
+
+mix_cluster_AF <- function(df){
+                  df <- df
+                  df$mixed <- (df[,1]+ df[,2])/2
+                  names(df)[names(df) == "mixed"] <- paste0(colnames(df[1:2]), collapse="_")
+                      return(df)
+      }
+
+mix_cells <- function(AF_df, n){
+             sample <- sample_n(AF_df,2, replace = FALSE) %>% t() %>% as.data.frame()
+             artificial_mix <- combn(sample, 2, simplify = FALSE)
+             cell_mixes <- lapply(artificial_mix, mix_cluster_AF) %>% 
+                          bind_cols()%>% 
+                          dplyr::select(.,contains("_")) %>% t() %>% as.data.frame()
+             return(cell_mixes)
+}
+
+```
+
+Below we will randomly generate doublets from the `sampled_pool` data frame --  we are aiming for 5-10% doublets as this is the typical doublet rate for a scDNA + protein run, as assessed by Mission Bio. We'll then select only heterotypic doublets and then calculate the percentage of the total data that are heterotypic doublets. This tells us that we've generated a synthetically multiplexed data set containing 7.2% doublets. 
+```{r}
+
+set.seed(1)
+
+sampled_all <- replicate(n = 1500, mix_cells(sampled_pool), simplify = FALSE) %>% bind_rows()
+
+nrow(sampled_all) #1,500 doublets
+
+sampled_all_annotated <- sampled_all %>% mutate(Sample = ifelse(grepl("A.A-",rownames(sampled_all)) & grepl(("B.B-"), rownames(sampled_all)), "A-B",
+                                              ifelse(grepl("A.A-",rownames(sampled_all)) & grepl(("C.C-"), rownames(sampled_all)), "A-C",
+                                              ifelse(grepl("A.A-",rownames(sampled_all)) & grepl(("D.D-"), rownames(sampled_all)), "A-D",
+                                              ifelse(grepl("A.A-",rownames(sampled_all)) & grepl(("E.E-"), rownames(sampled_all)), "A-E",
+                                              ifelse(grepl("B.B-",rownames(sampled_all)) & grepl(("C.C-"), rownames(sampled_all)), "B-C",
+                                              ifelse(grepl("B.B-",rownames(sampled_all)) & grepl(("D.D-"), rownames(sampled_all)), "B-D",
+                                              ifelse(grepl("B.B-",rownames(sampled_all)) & grepl(("E.E-"), rownames(sampled_all)), "B-E",
+                                              ifelse(grepl("C.C-",rownames(sampled_all)) & grepl(("D.D-"), rownames(sampled_all)), "C-D", 
+                                              ifelse(grepl("C.C-",rownames(sampled_all)) & grepl(("E.E-"), rownames(sampled_all)), "C-E", 
+                                              ifelse(grepl("D.D-",rownames(sampled_all)) & grepl(("E.E-"), rownames(sampled_all)), "D-E", "homotypic")))))))))))
+
+sampled_all_heterotypic <- sampled_all_annotated %>% dplyr::filter(!Sample == "homotypic")
+
+dim(sampled_all_heterotypic)
+
+AF_df_doublets <- rbind(common_SNPs_AF, sampled_all_heterotypic)
+
+percent_doublets <- nrow(sampled_all_heterotypic)/(nrow(AF_df_doublets))*100
+
+percent_doublets
+
+```
+
+
+Using the `AF_to_NGT` function below, we can convert AF values to NGT values for the heterotypic doublets, and merge with the `common_SNPs_NGT` and `master_NGT`. These will be useful later on during cell classification. 
+```{r, message=FALSE}
+
+AF_to_NGT <- function(x){
+            df <- ifelse(((x < 20)), 0, 
+                  ifelse(((x >= 20) & (x <= 80)), 1, 
+                  ifelse(((x > 80 ) & (x <= 100)), 2 , NA)))
+                return(df)
+}
+
+```
+
+Merge `doublet_NGT` with `master_NGT` to generate an NGT matrix consisting of genotyping information for common_SNPs across all real cells + doublets.
+```{r}
+
+doublet_NGT <- as.data.frame(sapply(sampled_all_heterotypic, AF_to_NGT))
+               rownames(doublet_NGT) <- rownames(sampled_all_heterotypic)
+               doublet_NGT$Sample <- as.character(doublet_NGT$Sample)
+
+master_NGT_with_doublets <- suppressMessages(full_join(master_NGT, doublet_NGT %>% rownames_to_column(., var = "Cell")))
+
+common_NGT_with_doublets <- rbind(common_SNPs_NGT, doublet_NGT)
+
+dim(common_NGT_with_doublets)
+
+```
+
+We determined before that there are 631 SNPs genotyped in all 5 AML samples. We now want to subset the data and select the SNPs that are going to be informative for the analysis, in this case, SNPs that do not have wild-type genotypes in every sample. This is achieved below to pair down our list of `interesting_SNPs.`
+```{r}
+
+Sample_A_interesting <-  Sample_A_SNP_info %>% dplyr::filter(id %in% common_SNPs$id) %>% dplyr::select(c(id, Bulk_VAF)) %>% dplyr::filter(Bulk_VAF > 40)
+Sample_B_interesting <-  Sample_B_SNP_info %>% dplyr::filter(id %in% common_SNPs$id) %>% dplyr::select(c(id, Bulk_VAF)) %>% dplyr::filter(Bulk_VAF > 40)
+Sample_C_interesting <-  Sample_C_SNP_info %>% dplyr::filter(id %in% common_SNPs$id) %>% dplyr::select(c(id, Bulk_VAF)) %>% dplyr::filter(Bulk_VAF > 40)
+Sample_D_interesting <-  Sample_D_SNP_info %>% dplyr::filter(id %in% common_SNPs$id) %>% dplyr::select(c(id, Bulk_VAF)) %>% dplyr::filter(Bulk_VAF > 40)
+Sample_E_interesting <-  Sample_E_SNP_info %>% dplyr::filter(id %in% common_SNPs$id) %>% dplyr::select(c(id, Bulk_VAF)) %>% dplyr::filter(Bulk_VAF > 40)
+
+
+interesting_SNPs <- rbind(Sample_A_interesting, Sample_B_interesting) %>% 
+                    rbind(., Sample_C_interesting ) %>% 
+                    rbind(., Sample_D_interesting) %>% 
+                    rbind(., Sample_E_interesting) %>% 
+                    dplyr::filter(!duplicated(id)) %>% dplyr::select(id) %>% 
+                    dplyr::filter(!id %in% c("chr11:108183167:A/G", "chr20:31022959:T/C","chr2:198266943:C/T" )) #these are all homozyogus in each sample
+
+```
+
+Subset the `AF_doublet` data frame for the interesting SNPs. 
+```{r}
+
+AF_df_doublets_interesting <- AF_df_doublets %>% dplyr::select(c(interesting_SNPs$id, Sample))
+
+```
+
+Now we want to generate a heatmap of AF values to see which SNPs are private to each sample and to assess the genotypes of each doublet pair. We first generate a dataframe `SNP_AF_noNA` which contains non-missing genotyping information. We want to omit rows containing NAs, as this is an alternative choice to randomly sampling and filling in missing values. Our assumption here is that a subset of data (in this case ~50-60% of the data) will accurately represent the rest of the sample. 
+```{r}
+
+SNP_AF_noNA <- AF_df_doublets_interesting %>% na.omit() #omit rows containing NAs
+
+sample_anno <- SNP_AF_noNA %>% rownames_to_column(., var = "Cell") %>% dplyr::select(c(Cell, Sample)) %>% column_to_rownames(., var = "Cell")
+anno_colors <- rev(glasbey(15))
+               names(anno_colors) <- unique(sample_anno$Sample)
+anno_colors <- list(Sample = anno_colors)
+
+#y-axis is sample, x-axis is SNP
+pheatmap(SNP_AF_noNA[, 1:ncol(SNP_AF_noNA)-1], 
+         show_rownames = FALSE, 
+         show_colnames = FALSE,
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE, 
+         fontsize = 14,
+         annotation_row =  sample_anno, 
+         annotation_colors = anno_colors,
+         color = kovesi.linear_blue_5_95_c73(100))
+
+```
+
+```{r}
+
+SNP_AF_noNA %>% group_by(Sample) %>% summarise(n_cells = n()) #tally number of cells in each group
+
+```
+
+Before we cluster the data, we want to drop columns that don't contain numerical AF data (i.e. get rid of the 'Sample' column). 
+```{r}
+
+clustering_AF_matrix <- SNP_AF_noNA %>% dplyr::select(!c(Sample))
+
+dim(clustering_AF_matrix)
+
+```
+
+Now we'll perform k-means clustering on the data (7,507 cells and 9 SNPs), setting the number of centers equal to the number of samples in the multiplex - in this case 5. We then run UMAP on to visualize clustering of the data
+```{r}
+set.seed(1)
+
+kmeans_AF <- kmeans(clustering_AF_matrix, centers = 5, nstart = 30) #centers set based on number of samples in the multiplex 
+
+umap_SNPs <- umap(clustering_AF_matrix, n_neighbors = sqrt(nrow(clustering_AF_matrix)))
+
+cell_cluster <- kmeans_AF$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+umap_df <- umap_SNPs$layout %>%
+           as.data.frame() %>% 
+           merge(., cell_cluster, by = 0) %>% 
+           column_to_rownames(., var = "Row.names")
+
+names(umap_df)[names(umap_df)== "V1"] <- "UMAP1"
+names(umap_df)[names(umap_df)== "V2"] <- "UMAP2"
+umap_df$Cluster <- as.character(umap_df$Cluster)
+
+umap_cluster <- umap_df %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                      geom_point(aes( fill = Cluster), color = "black",alpha = .2, size =2, shape =21, show.legend = FALSE)+
+                      scale_fill_manual(values = rev(c(tol(5))))+
+                                  theme_classic()+
+                                  theme(axis.title.x = element_text(size = 12),
+                                        axis.title.y = element_text(size = 12),
+                                        axis.text.x = element_text(size = 10),
+                                        axis.text.y = element_text(size = 10),
+                                        legend.text = element_text(size =10),
+                                    plot.title = element_text(hjust = 0.5, size = 14))+
+                      labs(x = "UMAP1",y = "UMAP2")+
+                        ggtitle("UMAP Labeled by Cluster")
+
+
+umap_cluster
+
+```
+
+Now we'll generate a UMAP plot where the samples + doublets are labeled. We can see that k-means clustering does quite a good job at clustering cells from a sample to the same cluster. We can also see some apparent misassignment, and some ambiguity in a subset of cells. 
+```{r}
+
+umap_df_labeled <- merge(umap_df, SNP_AF_noNA, by = 0) %>% column_to_rownames(., var = "Row.names")
+
+ umap_labeled_sample<- umap_df_labeled %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                       geom_point(aes( fill = Sample), color = "black",alpha = .2, size =2, shape =21, show.legend = FALSE)+
+                       scale_fill_manual(values = (watlington()[2:16]))+
+                          theme_classic()+
+                          theme(axis.title.x = element_text(size = 12),
+                                axis.title.y = element_text(size = 12),
+                                axis.text.x = element_text(size = 10),
+                                axis.text.y = element_text(size = 10),
+                                legend.text = element_text(size =10),
+                                  plot.title = element_text(hjust = 0.5, size = 14))+
+                          labs(x = "UMAP1",y = "UMAP2")+
+                          ggtitle("UMAP Labeled by Sample")
+  
+ umap_labeled_sample        
+
+```
+
+Although we already know the identity of each cell, we want to pretend that we don't for the sake of testing the demultiplexing pipeline. Let's take a look at each cluster's genotype in a sample-blind way. This is achieved below, and looks quite similar to data one would see in a true mutliplexed sample.
+```{r}
+
+cluster_df <- kmeans_AF$cluster %>% as.data.frame() %>% rename("." = "Cluster")
+
+AF_cluster <- SNP_AF_noNA %>% merge(., cluster_df, by=0, all=FALSE) %>% 
+             column_to_rownames(., var = "Row.names") %>% 
+            .[c(colnames(clustering_AF_matrix),"Cluster")]
+
+#y-axis is cluster, x-axis is SNP
+superheat(AF_cluster[,1:ncol(AF_cluster)-1], #make SNP heatmap using the Superheat package
+          scale = FALSE,
+          bottom.label.text.angle = 90,
+          membership.rows = AF_cluster$Cluster,
+          bottom.label.size = .2,
+          bottom.label.text.size = 0,
+          left.label.text.size = 2.8,
+          left.label.size = .1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          smooth.heat = FALSE)
+
+```
+Now we can tally how many cells are in each cluster.
+```{r}
+
+AF_cluster %>% group_by(Cluster) %>% summarise(n_cells = n())
+
+```
+
+After that, we'll sample 500 cells from each cluster to use as a reference for doublet removal.
+```{r}
+
+set.seed(2) 
+
+AF_cluster_list <- AF_cluster %>% split(AF_cluster$Cluster) #split data frame into a list of cells in each cluster
+
+sampled_pool_list_small <- lapply(AF_cluster_list,  function(df){ 
+                                  sampled_cells <- df %>% 
+                                    dplyr::select(!c("Cluster")) %>%
+                                      .[sample(nrow(.), 500), ] 
+                                  return(sampled_cells)
+                                          }) 
+
+sampled_pool_small <- sampled_pool_list_small %>% do.call(rbind,.) #combines sampled cells into a single dataframe
+dim(sampled_pool_small)
+
+```
+
+Our goal now is to remove doublets from our data. We do this first by generating artificial heterotypic doublets (rate of 5-10% of the total data).
+```{r}
+
+set.seed(1)
+
+sampled_small <- replicate(n = nrow(master_NGT_with_doublets)*.1, mix_cells(sampled_pool_small), simplify = FALSE) %>% bind_rows()
+
+dim(sampled_small)
+
+sampled_small_annotated <- sampled_small %>% mutate(Sample = ifelse(grepl(".A-",rownames(sampled_small)) & grepl((".B-"), rownames(sampled_small)), "A-B",
+                                              ifelse(grepl(".A-",rownames(sampled_small)) & grepl((".C-"), rownames(sampled_small)), "A-C",
+                                              ifelse(grepl(".A-",rownames(sampled_small)) & grepl((".D-"), rownames(sampled_small)), "A-D",
+                                              ifelse(grepl(".A-",rownames(sampled_small)) & grepl((".E-"), rownames(sampled_small)), "A-E",
+                                              ifelse(grepl(".B-",rownames(sampled_small)) & grepl((".C-"), rownames(sampled_small)), "B-C",
+                                              ifelse(grepl(".B-",rownames(sampled_small)) & grepl((".D-"), rownames(sampled_small)), "B-D",
+                                              ifelse(grepl(".B-",rownames(sampled_small)) & grepl((".E-"), rownames(sampled_small)), "B-E",
+                                              ifelse(grepl(".C-",rownames(sampled_small)) & grepl((".D-"), rownames(sampled_small)), "C-D", 
+                                              ifelse(grepl(".C-",rownames(sampled_small)) & grepl((".E-"), rownames(sampled_small)), "C-E","homotypic"))))))))))
+
+sampled_small_heterotypic <- sampled_small_annotated %>% dplyr::filter(!Sample == "homotypic") %>% dplyr::select(!c("Sample"))
+
+nrow(sampled_small_heterotypic)/nrow(master_NGT_with_doublets)*100  #7.9% of total data
+
+dim(sampled_small_heterotypic)
+
+
+```
+
+We then generate a cluster center for the artificial doublets via K-means clustering with a center value of 1. The artificial doublets are then combined with the real clusters generated previously, and we label them as artificial or real cells, respectively. 
+```{r}
+
+set.seed(1)
+
+kmeans_sampled <- kmeans(sampled_small_heterotypic, centers = 1, nstart = 30)
+kmeans_sampled_center <- kmeans_sampled$centers[1,]
+
+kmeans_sampled_clusters <- kmeans_sampled$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+                           kmeans_sampled_clusters$Cluster[kmeans_sampled_clusters$Cluster == "1"] <- "artificial"
+
+real_and_mixed_clusters <- rbind(kmeans_sampled_clusters, cell_cluster) #bind mix cluster with real clusters
+real_and_mixed_clusters$Cluster[real_and_mixed_clusters$Cluster == "1" | 
+                                real_and_mixed_clusters$Cluster == "2" |
+                                real_and_mixed_clusters$Cluster == "3" |
+                                real_and_mixed_clusters$Cluster == "4" |
+                                real_and_mixed_clusters$Cluster == "5" ] <- "real"
+```
+
+We can then generate a UMAP projection of real and artificial cells together. 
+```{r}
+
+cells_and_sampled_AF <- rbind(clustering_AF_matrix, sampled_small_heterotypic) #combine real and artificial cells with SNP AFs
+
+umap_SNPs_real_and_mixed <-umap(cells_and_sampled_AF, n_neighbors = sqrt(nrow(cells_and_sampled_AF)))
+
+umap_df_real_and_mixed <- umap_SNPs_real_and_mixed$layout %>%
+                            as.data.frame() %>% 
+                              merge(., real_and_mixed_clusters, by = 0) %>% 
+                                column_to_rownames(., var = "Row.names")
+
+      names(umap_df_real_and_mixed)[names(umap_df_real_and_mixed)== "V1"] <- "UMAP1"
+      names(umap_df_real_and_mixed)[names(umap_df_real_and_mixed)== "V2"] <- "UMAP2"
+      umap_df_real_and_mixed$Cluster <- as.character(umap_df_real_and_mixed$Cluster)
+
+  umap_df_real_and_mixed %>% arrange(., desc(Cluster == "real")) %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                 geom_point(aes(color = Cluster, fill = Cluster), alpha = .2, size =2, shape =21)+
+                 scale_color_manual(values = c("artificial"="black","real"="black"))+  
+                 scale_fill_manual(values = c("artificial"="#EA3546","real"="#00A7E1"))+                
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 12),
+                        axis.title.y = element_text(size = 12),
+                        axis.text.x = element_text(size = 10),
+                        axis.text.y = element_text(size = 10),
+                        legend.text = element_text(size = 10),
+                        plot.title = element_text(hjust = 0.5, size = 14))+
+                labs(x = "UMAP1", y = "UMAP2")
+
+```
+Next we will calculate the Euclidean distance between reals cells and the artificial center using the pdist function within the `pdist` package. 
+```{r}
+
+dist_C1_mix <- pdist(AF_cluster_list[1]$`1`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C2_mix <- pdist(AF_cluster_list[2]$`2`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C3_mix <- pdist(AF_cluster_list[3]$`3`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C4_mix <- pdist(AF_cluster_list[4]$`4`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C5_mix <- pdist(AF_cluster_list[5]$`5`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+rownames(dist_C1_mix)<- rownames(AF_cluster_list[1]$`1`)
+rownames(dist_C2_mix)<- rownames(AF_cluster_list[2]$`2`)
+rownames(dist_C3_mix)<- rownames(AF_cluster_list[3]$`3`)
+rownames(dist_C4_mix)<- rownames(AF_cluster_list[4]$`4`)
+rownames(dist_C5_mix)<- rownames(AF_cluster_list[5]$`5`)
+
+distances_cluster_mix <- rbind(dist_C1_mix, dist_C2_mix) %>%
+                         rbind(., dist_C3_mix) %>%
+                         rbind(., dist_C4_mix) %>%
+                         rbind(., dist_C5_mix)
+
+```
+
+We'll also calculate the Euclidean distance from real cells to their respective real centers, which we pull from the K-means clustering output. Here we are asking: if a cell is partitioned into a cluster, how similar is that cell's SNP profile to the average SNP profile of that cluster?
+```{r}
+
+C1_mean_AF <- kmeans_AF$centers[1,]
+C2_mean_AF <- kmeans_AF$centers[2,]
+C3_mean_AF <- kmeans_AF$centers[3,]
+C4_mean_AF <- kmeans_AF$centers[4,]
+C5_mean_AF <- kmeans_AF$centers[5,]
+
+dist_C1_real <- pdist(AF_cluster_list[1]$`1`[1:ncol(AF_cluster)-1], C1_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C2_real <- pdist(AF_cluster_list[2]$`2`[1:ncol(AF_cluster)-1], C2_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C3_real <- pdist(AF_cluster_list[3]$`3`[1:ncol(AF_cluster)-1], C3_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C4_real <- pdist(AF_cluster_list[4]$`4`[1:ncol(AF_cluster)-1], C4_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C5_real <- pdist(AF_cluster_list[5]$`5`[1:ncol(AF_cluster)-1], C5_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+rownames(dist_C1_real)<- rownames(AF_cluster_list[1]$`1`)
+rownames(dist_C2_real)<- rownames(AF_cluster_list[2]$`2`)
+rownames(dist_C3_real)<- rownames(AF_cluster_list[3]$`3`)
+rownames(dist_C4_real)<- rownames(AF_cluster_list[4]$`4`)
+rownames(dist_C5_real)<- rownames(AF_cluster_list[5]$`5`)
+
+distances_cluster_real <- rbind(dist_C1_real, dist_C2_real) %>%
+                          rbind(., dist_C3_real) %>%
+                          rbind(., dist_C4_real) %>%
+                          rbind(., dist_C5_real)
+
+```
+
+We then want to calculate how close 95% of completely-genotyped cells are to their respective cluster center. This will be used as a cutoff to filter out cells that fall within this distance to the artificial (mixed) center.
+```{r}
+
+quantile_95 <- quantile(distances_cluster_real$real, probs = c(0.95)) 
+
+quantile_95
+
+```
+
+```{r}
+
+    ggplot(distances_cluster_real, aes(x=real)) +
+           geom_density(color = "black", fill = "black")+
+           theme_bw()+
+                annotate(geom = "rect", xmin = 0, xmax = quantile_95, ymin = 0, ymax = 0.035,
+                               fill = "#00A7E1", colour = "black", alpha = 0.4, linetype = "dashed") +
+                xlab("Euclidean Distance")+
+                ylab("Density")+
+                theme(axis.title.x = element_text(size = 12),
+                      axis.title.y = element_text(size = 12),
+                      axis.text.x = element_text(size = 10),
+                      axis.text.y = element_text(size = 10),
+                      legend.text = element_text(size = 10),
+                      plot.title = element_text(hjust = 0.5, size = 14))+
+                xlim(0,125)+
+                ylim(0, 0.035)+
+                theme(plot.title = element_text(hjust = 0.5, size = 14), legend.title = element_blank())
+
+```
+
+
+```{r}
+
+distances_cluster_real_df<- merge(distances_cluster_real, cell_cluster, by = 0) %>% 
+                              column_to_rownames(., var = "Row.names")
+
+
+ggplot(distances_cluster_real_df, aes(x = real, y = factor(Cluster), fill = factor(Cluster))) +
+       scale_fill_manual(values = rev(c(tol(5))))+
+          theme_bw()+
+       geom_violin(alpha = 0.5) +
+       geom_jitter( height = 0.2, size = .01)+
+          theme(axis.title.x = element_text(size = 12),
+                axis.title.y = element_text(size = 12),
+                axis.text.x = element_text(size = 10),
+                axis.text.y = element_text(size = 10),
+                legend.text = element_text(size = 10),
+                plot.title = element_text(hjust = 0.5, size = 14))+
+       xlab("Euclidean Distance")+
+       ylab("Cluster")
+
+```
+
+```{r}
+
+distances_cluster_mix_df<- merge(distances_cluster_mix, cell_cluster, by = 0) %>% 
+                              column_to_rownames(., var = "Row.names")
+
+
+labels_hist<- c("Cluster 1", "Cluster 2", "Cluster 3","Cluster 4", "Cluster 5")
+names(labels_hist) <- c("1", "2", "3","4", "5")
+
+  ggplot(distances_cluster_mix_df, aes(x=mix, fill=factor(Cluster))) +
+  geom_density(alpha=.5, show.legend = FALSE)+
+      theme_bw()+
+  annotate(geom = "rect", xmin = 0, xmax = quantile_95, ymin = 0, ymax = 0.06,
+           fill = "black", colour = "black", alpha = 0.3, linetype = "dashed") +
+           scale_fill_manual(values = rev(c(tol(5))))+
+  xlim(0,200)+
+  xlab("Euclidean Distance")+
+  ylab("Density")+
+      theme(axis.title.x = element_text(size = 12),
+            axis.title.y = element_text(size = 12),
+            axis.text.x = element_text(size = 10),
+            axis.text.y = element_text(size = 10),
+            legend.text = element_text(size = 10),
+            plot.title = element_text(hjust = 0.5, size = 14))+
+      theme(plot.title = element_text(hjust = 0.5, size = 14), 
+            legend.title = element_blank(), strip.background = element_rect(
+            color="black", fill="white", size=0.5, linetype="solid"
+     ))+ facet_wrap(~Cluster, labeller = labeller(Cluster = labels_hist))
+
+```
+
+After checking our data, we then want to start the doublet removal process. We'll now select all cells and the the subset of SNPs we previously used for clustering.
+```{r}
+
+#this data frame containing imperfect genotypes will be used as input to filter out putative doublets from the data set in the next few chunks of code.
+imperfect_AF <- AF_df_doublets %>% 
+              .[,colnames(clustering_AF_matrix)] %>% rownames_to_column(., var = "Cell")
+
+table(is.na(imperfect_AF))
+
+```
+
+Since we ultimately want to get an estimate of the distance from all cells to the real and artificial cluster centers, we need to get rid of NAs for SNPs with missing genotyping information. Below are functions to randomly sample and replace NAs with AF values of 0 (wild type), 50 (heterozygous), or 100 (homozygous). 
+```{r}
+
+lets_sample <- function(AF){
+                      SNP_AF <- AF
+                      sampled_AF <- as.data.frame(apply(SNP_AF,2, function(x){
+                                        ifelse((is.na(x)),
+                                        sample(c(0,50,100), 
+                                        replace = TRUE),x)})) 
+                      return(sampled_AF)
+}
+
+
+sample_for_mixing <- function(df, ref, center, quantile){
+                                df_sampled <- lets_sample(AF = df)
+                                df_sampled <- df_sampled[,colnames(ref)]
+                        
+                                distance <- pdist(df_sampled, center) %>% 
+                                            as.matrix() %>% 
+                                            as.data.frame() %>% 
+                                            rename("V1"= "mix_dist") 
+                        
+                        rownames(distance) <- rownames(df_sampled)
+                        
+                        distance_filtered <- distance %>% 
+                                               dplyr::filter(mix_dist > quantile)
+                        
+                        return(distance_filtered)
+}
+
+```
+
+Replicate the process 10 times, and then select the cells that survive the doublet filter through all replicates. The survivors represent the pool of cells that we will classify later on. 
+```{r, message=FALSE, warning=FALSE}
+
+set.seed(1)
+replicated_sampling <- replicate(10, sample_for_mixing(df = (imperfect_AF %>%
+                                                            column_to_rownames(., var = "Cell")),
+                                 ref = clustering_AF_matrix,
+                                 center = kmeans_sampled_center,
+                                 quantile = quantile_95) %>% 
+                                 rownames_to_column(., var = "Cell"))
+
+survivors <- merge(replicated_sampling[,1], replicated_sampling[,2], by = "Cell") %>%
+             merge(., replicated_sampling[,3], by = "Cell") %>%
+             merge(., replicated_sampling[,4], by = "Cell") %>%
+             merge(., replicated_sampling[,5], by = "Cell") %>%
+             merge(., replicated_sampling[,6], by = "Cell") %>%
+             merge(., replicated_sampling[,7], by = "Cell") %>%
+             merge(., replicated_sampling[,8], by = "Cell") %>%
+             merge(., replicated_sampling[,9], by = "Cell") %>%
+             merge(., replicated_sampling[,10], by = "Cell") %>% 
+             column_to_rownames(., var = "Cell")
+
+dim(survivors)
+ 
+```
+
+In the above code, we filtered out doublets in the total dataset to obtain a pool of cells that to classify later. Before we do that, we need to identify the SNP profile of each cluster, which we'll then use to classify the remaining cells. Current clusters have doublets present, so we still need to filter out doublets in this subset of data. 
+```{r}
+
+clusters_filtered <- cbind(distances_cluster_real, distances_cluster_mix) %>% 
+                     dplyr::filter(mix > quantile_95) %>% #dist to artificial center must be larger than quantile_95
+                     dplyr::filter(mix > real) #cell must be closer to its own center than to the artificial center
+
+clusters_singlets <- clustering_AF_matrix[rownames(clusters_filtered), colnames(clustering_AF_matrix)]
+
+dim(clusters_singlets)
+
+```
+
+Now we'll recluster the subset of completely genotyped cells with doublets removed. As we did earlier on, we set k=5 since there are 5 unique samples in this multiplexed run. 
+```{r}
+
+set.seed(1)
+
+km_singlets<- kmeans(clusters_singlets, centers = 5, nstart = 30)
+
+umap_singlets<-umap(clusters_singlets, n_neighbors = sqrt(nrow(clusters_singlets))) 
+cell_cluster_singlets<- km_singlets$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+umap_df_singlets<- umap_singlets$layout %>%
+                   as.data.frame() %>% 
+                   merge(., cell_cluster_singlets, by = 0) %>% 
+                   column_to_rownames(., var = "Row.names")
+
+
+names(umap_df_singlets)[names(umap_df_singlets)== "V1"]<-"UMAP1"
+names(umap_df_singlets)[names(umap_df_singlets)== "V2"]<-"UMAP2"
+umap_df_singlets$Cluster<- as.character(umap_df_singlets$Cluster)
+
+
+               umap_df_singlets %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                geom_point(aes( fill = Cluster), color = "black",alpha = .2, size =2, shape =21)+
+                      scale_fill_manual(values = rev(c(tol(5))))+
+                  theme_classic()+
+                theme(plot.title = element_text(hjust = 0.5, size = 14))+
+                labs(x = "UMAP1",
+                     y = "UMAP2")+
+                ggtitle("De-doubleted Clusters")
+
+```
+Again we'll inspect the SNP profile of each de-doubleted cluster
+```{r}
+
+singlet_cluster_df<- km_singlets$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+NGT_cluster_singlets<- common_NGT_with_doublets %>%
+                        merge(.,singlet_cluster_df, by = 0, all =FALSE ) %>%
+                        column_to_rownames(., var = "Row.names") %>% 
+                        .[c(colnames(clusters_singlets),"Cluster")]
+
+
+superheat(NGT_cluster_singlets[, 1:ncol(NGT_cluster_singlets)-1],
+          scale = FALSE,
+          bottom.label.text.angle = 90,
+          membership.rows = NGT_cluster_singlets$Cluster,
+          bottom.label.size = .2,
+          bottom.label.text.size = 0,
+          left.label.text.size = 2.8,
+          left.label.size = .1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          smooth.heat = FALSE)
+
+```
+Now we'll prepare the data for classification i.e. matching of cells to clusters based on SNP profiles. 
+```{r}
+
+NGT_to_classify<- common_NGT_with_doublets %>% 
+                 .[rownames(survivors), colnames(clustering_AF_matrix)] %>%
+                 apply(., 1, as.character)
+
+rownames(NGT_to_classify)<- colnames(clustering_AF_matrix)
+
+matching_df<- NGT_to_classify %>% 
+              as.data.frame()
+
+matching_NGT<- apply(matching_df, 2, as.character) %>% as.data.frame()
+  rownames(matching_NGT)<- rownames(matching_df)
+
+matching_NGT_split<- split.default(matching_NGT, c(1:ncol(matching_NGT))) #split into multiple dataframes
+matching_df_split_noNA<- lapply(matching_NGT_split, na.omit)#get rid of columns with NAs
+
+
+```
+
+This function calculates the Hamming distance between each cells SNP profile and the cluster reference profile that is supplied. 
+```{r}
+
+match_cells <- function(cluster, x, names ){
+                        merged<-lapply(x, function(y) merge(y,cluster, by = 0 ))
+                        matching_index<- lapply(merged, function(x){sum(x[,2] != x[,3])})
+                        matched_df<- as.data.frame(do.call(rbind,matching_index))
+                        rownames(matched_df)<- colnames(names)
+               return(matched_df)
+              }
+
+```
+
+Here we prepare the de-doubleted data to determine the most common genotype for each SNP in each cluster. This is done with NGT values (0, 1, 2). 
+```{r}
+singlets_AF<- clustering_AF_matrix[rownames(singlet_cluster_df),] %>% 
+              cbind(., singlet_cluster_df) %>% 
+              split(.$Cluster) 
+
+C1_singlets<- singlets_AF$`1`[1:ncol(clustering_AF_matrix)]
+C2_singlets<- singlets_AF$`2`[1:ncol(clustering_AF_matrix)]
+C3_singlets<- singlets_AF$`3`[1:ncol(clustering_AF_matrix)]
+C4_singlets<- singlets_AF$`4`[1:ncol(clustering_AF_matrix)]
+C5_singlets<- singlets_AF$`5`[1:ncol(clustering_AF_matrix)]
+
+
+C1_to_match<- matching_df[,rownames(C1_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C2_to_match<- matching_df[,rownames(C2_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C3_to_match<- matching_df[,rownames(C3_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C4_to_match<- matching_df[,rownames(C4_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C5_to_match<- matching_df[,rownames(C5_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+
+
+  rownames(C1_to_match)<- colnames(C1_singlets)
+  rownames(C2_to_match)<- colnames(C2_singlets)
+  rownames(C3_to_match)<- colnames(C3_singlets)
+  rownames(C4_to_match)<- colnames(C4_singlets)
+  rownames(C5_to_match)<- colnames(C5_singlets)
+
+```
+
+Determine the most common genotype for each SNP in each cluster using NGT values. 
+```{r, match cells to clusters}
+
+C1_input<- apply(C1_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C1")
+C2_input<- apply(C2_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C2")
+C3_input<- apply(C3_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C3")
+C4_input<- apply(C4_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C4")
+C5_input<- apply(C5_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C5")
+
+input_df<- cbind(C1_input, C2_input) %>%
+         cbind(., C3_input) %>%
+         cbind(., C4_input) %>% 
+         cbind(., C5_input) %>% 
+         t() %>%
+         as.data.frame() %>% 
+         apply(., 2, as.numeric) %>% 
+         as.data.frame()
+
+#y-axis is cluster, x-axis is SNP
+pheatmap(input_df[, 1:ncol(input_df)], 
+         show_rownames = TRUE, 
+         show_colnames = FALSE,
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE, 
+         border_color = "black",
+         legend = TRUE, 
+         gaps_row = c(1,2,3,4),
+         color = c("#E5DADA","#840032","#002642"))
+
+
+```
+
+Match cells to each cluster reference using the `match_cells` function, which requires a cluster reference profile, a list containing SNP profiles for all cells to be classified, and a data frame to supply barcode identities. After running this function over each cluster, each barcode will have a Hamming distance to each cluster.  
+```{r}
+
+C1_matched<- match_cells(cluster = C1_input, x = matching_df_split_noNA, names = matching_NGT) 
+C2_matched<- match_cells(cluster = C2_input, x = matching_df_split_noNA, names = matching_NGT)
+C3_matched<- match_cells(cluster = C3_input, x = matching_df_split_noNA, names = matching_NGT) 
+C4_matched<- match_cells(cluster = C4_input, x = matching_df_split_noNA, names = matching_NGT)
+C5_matched<- match_cells(cluster = C5_input, x = matching_df_split_noNA, names = matching_NGT) 
+
+```
+
+Now we'll calculate the Hamming distance between the clusters themselves. This will ensure that if there are clusters that have highly similar SNP profiles (i.e. Hamming distance <3) we can account for it in the downstream filtering steps. 
+```{r}
+
+cluster_input <- cbind(C1_input, C2_input) %>%
+                 cbind(., C3_input) %>%
+                 cbind(., C4_input) %>% 
+                 cbind(., C5_input) %>% 
+                 t() %>% as.data.frame()
+
+rownames(cluster_input)[rownames(cluster_input) == "C1"] = "Cluster 1"
+rownames(cluster_input)[rownames(cluster_input) == "C2"] = "Cluster 2"
+rownames(cluster_input)[rownames(cluster_input) == "C3"] = "Cluster 3"
+rownames(cluster_input)[rownames(cluster_input) == "C4"] = "Cluster 4"
+rownames(cluster_input)[rownames(cluster_input) == "C5"] = "Cluster 5"
+
+cluster_input_hamming <- as.data.frame(as.matrix(hammingdists(cluster_input)))
+                          rownames(cluster_input_hamming)<- rownames(cluster_input)
+                          colnames(cluster_input_hamming)<- rownames(cluster_input)
+
+superheat(cluster_input_hamming,
+          scale = FALSE,
+          left.label.text.size = 4,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          left.label.size = .2,
+          bottom.label.size = .2,
+          bottom.label.text.size = 4,
+          legend = FALSE,
+          X.text = round(as.matrix(cluster_input_hamming), 1), 
+          title = "Hamming Distance Between Clusters", 
+          title.size = 6)
+
+```
+The Hamming distance data are then merged into a single dataframe. We also want to number the amount of missing SNPs in each cell that was included in cell matching; this will enable us to calculate the number of possible SNP matches between cell and cluster vs. the number of matches we observed. 
+```{r}
+
+available_info_singlets <- common_NGT_with_doublets %>% 
+                          .[rownames(survivors), colnames(input_df)] %>%
+                           mutate(prop_avail_info = (((ncol(.) - rowSums(is.na(.)))/ncol(.)))) %>%
+                           dplyr::select(c(prop_avail_info))
+
+C1_info <- C1_matched %>% rename("V1"= "C1")
+C2_info <- C2_matched %>% rename("V1"= "C2")
+C3_info <- C3_matched %>% rename("V1"= "C3")
+C4_info <- C4_matched %>% rename("V1"= "C4")
+C5_info <- C5_matched %>% rename("V1"= "C5")
+
+match_master <- cbind(C1_info, C2_info) %>%
+                cbind(., C3_info) %>%
+                cbind(., C4_info) %>%
+                cbind(., C5_info) %>% 
+                cbind(.,available_info_singlets) %>%
+                mutate(possible_matches = (prop_avail_info * ncol(input_df))) %>%
+                mutate(num_missing_SNPs = (ncol(input_df) - possible_matches)) %>%
+                mutate(C1_abs = (possible_matches - C1)) %>%
+                mutate(C2_abs = (possible_matches - C2)) %>%
+                mutate(C3_abs = (possible_matches - C3)) %>%
+                mutate(C4_abs = (possible_matches - C4)) %>%
+                mutate(C5_abs = (possible_matches - C5)) %>%
+                mutate(C1_prop = (C1_abs/possible_matches)) %>%
+                mutate(C2_prop = (C2_abs/possible_matches)) %>%
+                mutate(C3_prop = (C3_abs/possible_matches)) %>%
+                mutate(C4_prop = (C4_abs/possible_matches)) %>%
+                mutate(C5_prop = (C5_abs/possible_matches)) 
+
+```
+
+First we want to know which Sample was assigned to which Cluster. This will be useful for the calculating recovery percent and misclassifcation rate later. Below we will use a conservative filter i.e. requiring maximum Hammming distances between each cluster. This will get rid of a lot of cells - later on we'll recover the rest. 
+```{r}
+
+C1_max_HD <- match_master %>% 
+              dplyr::filter(C1_abs >= possible_matches)  %>%
+              dplyr::filter((C1_abs - C2_abs) == cluster_input_hamming[1,2] & 
+                            (C1_abs - C3_abs) == cluster_input_hamming[1,3] & 
+                            (C1_abs - C4_abs) == cluster_input_hamming[1,4] &
+                            (C1_abs - C5_abs) == cluster_input_hamming[1,5])
+
+C2_max_HD <- match_master %>% 
+              dplyr::filter(C2_abs >= possible_matches)  %>%
+              dplyr::filter((C2_abs - C1_abs) == cluster_input_hamming[2,1] & 
+                            (C2_abs - C3_abs) == cluster_input_hamming[2,3] & 
+                            (C2_abs - C4_abs) == cluster_input_hamming[2,4] & 
+                            (C2_abs - C5_abs) == cluster_input_hamming[2,5])
+
+C3_max_HD <- match_master %>% 
+              dplyr::filter(C3_abs >= possible_matches)  %>%
+              dplyr::filter((C3_abs - C1_abs) == cluster_input_hamming[3,1] & 
+                            (C3_abs - C2_abs) == cluster_input_hamming[3,2] & 
+                            (C3_abs - C4_abs) == cluster_input_hamming[3,4] &
+                            (C3_abs - C5_abs) == cluster_input_hamming[3,5])  
+
+C4_max_HD <- match_master %>% 
+              dplyr::filter(C4_abs >= possible_matches)  %>%
+              dplyr::filter((C4_abs - C1_abs) == cluster_input_hamming[4,1] & 
+                            (C4_abs - C2_abs) == cluster_input_hamming[4,2] & 
+                            (C4_abs - C3_abs) == cluster_input_hamming[4,3] &
+                            (C4_abs - C5_abs) == cluster_input_hamming[4,5])
+
+C5_max_HD <- match_master %>% 
+              dplyr::filter(C5_abs >= possible_matches)  %>%
+              dplyr::filter((C5_abs - C1_abs) == cluster_input_hamming[5,1]  & 
+                            (C5_abs - C2_abs) == cluster_input_hamming[5,2]  & 
+                            (C5_abs - C3_abs) == cluster_input_hamming[5,3]  &
+                            (C5_abs - C4_abs) == cluster_input_hamming[5,4] )
+                              
+
+```
+
+```{r}
+
+C1_max_HD_cells <- C1_max_HD %>% 
+                   rownames_to_column(., var = "Cell") %>% .$Cell %>% 
+                   as.data.frame() %>%
+                   rename("." = "Cell") %>% 
+                    mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                                    ifelse(grepl("A-", Cell), "A", 
+                                    ifelse(grepl("B-", Cell), "B", 
+                                    ifelse(grepl("C-", Cell), "C",
+                                    ifelse(grepl("D-", Cell), "D", 
+                                    ifelse(grepl("E-", Cell), "E", "")))))))
+
+C2_max_HD_cells <- C2_max_HD %>% 
+                   rownames_to_column(., var = "Cell") %>% .$Cell %>% 
+                   as.data.frame() %>%
+                   rename("." = "Cell") %>% 
+                    mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                                    ifelse(grepl("A-", Cell), "A", 
+                                    ifelse(grepl("B-", Cell), "B", 
+                                    ifelse(grepl("C-", Cell), "C",
+                                    ifelse(grepl("D-", Cell), "D", 
+                                    ifelse(grepl("E-", Cell), "E", "")))))))
+
+C3_max_HD_cells <- C3_max_HD %>% 
+                   rownames_to_column(., var = "Cell") %>% .$Cell %>% 
+                   as.data.frame() %>%
+                   rename("." = "Cell") %>% 
+                    mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                                    ifelse(grepl("A-", Cell), "A", 
+                                    ifelse(grepl("B-", Cell), "B", 
+                                    ifelse(grepl("C-", Cell), "C",
+                                    ifelse(grepl("D-", Cell), "D", 
+                                    ifelse(grepl("E-", Cell), "E", "")))))))
+
+C4_max_HD_cells <- C4_max_HD %>% 
+                   rownames_to_column(., var = "Cell") %>% .$Cell %>% 
+                   as.data.frame() %>%
+                   rename("." = "Cell") %>% 
+                    mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                                    ifelse(grepl("A-", Cell), "A", 
+                                    ifelse(grepl("B-", Cell), "B", 
+                                    ifelse(grepl("C-", Cell), "C",
+                                    ifelse(grepl("D-", Cell), "D", 
+                                    ifelse(grepl("E-", Cell), "E", "")))))))
+
+C5_max_HD_cells <- C5_max_HD %>% 
+                   rownames_to_column(., var = "Cell") %>% .$Cell %>% 
+                   as.data.frame() %>%
+                   rename("." = "Cell") %>% 
+                    mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                                    ifelse(grepl("A-", Cell), "A", 
+                                    ifelse(grepl("B-", Cell), "B", 
+                                    ifelse(grepl("C-", Cell), "C",
+                                    ifelse(grepl("D-", Cell), "D", 
+                                    ifelse(grepl("E-", Cell), "E", "")))))))
+
+```
+
+Tally number of cells from each sample in each cluster to get the sample ID. 
+```{r}
+
+table(C1_max_HD_cells$Sample) 
+table(C2_max_HD_cells$Sample) 
+table(C3_max_HD_cells$Sample) 
+table(C4_max_HD_cells$Sample) 
+table(C5_max_HD_cells$Sample) 
+
+```
+
+The cluster-sample matching  (Cluster 1 - Sample E, Cluster 2 - Sample B, Cluster 3 - Sample C, Cluster 4-  Sample A, Cluster 5 - Sample D) will be inserted into the functions below to calculate rates of classification and misclassification.
+
+We'll run the following analysis with a dataset of cells that have complete genotyping information for all 9 SNPs, called `perfect_cells`. These cells are what remain after running the starting cells (`clustering_AF_matrix`) through the de-doubleting code. 
+```{r}
+
+perfect_cells <- master_NGT_with_doublets %>% #5,633 cells with complete genotyping
+                 subset(Cell %in% rownames(clusters_singlets)) %>% 
+                 dplyr::select(c(Cell, colnames(clusters_singlets)))  %>% 
+                 column_to_rownames(., var = "Cell")
+
+perfect_cells[grepl("_", rownames(perfect_cells)),] %>% nrow() #58 of these cells are doublets
+
+
+all_names_df <- perfect_cells %>% t() %>% as.data.frame()
+
+```
+
+
+Now we will test how allowing mismatches when classifying cells with complete SNP genotyping information affects recovery and misclassification rate. In this test, genotyping information is present in a data frame containing 5,575 singlets and 58 doublets. This is the dataset the remains after the doublet removal step -- some doublets will persist in this dataset. Misclassification pertains to the erroneous binning of a singlet to the wrong cluster, OR the classification of a residual doublet to any cluster. 
+```{r}
+
+simulate_classification_loose_filters <- function(NGT, names, n, C1_ref, C2_ref, C3_ref, C4_ref, C5_ref){
+        
+                              NGT_subset <- NGT[,sample(ncol(NGT), size = ncol(NGT), replace = FALSE), drop = FALSE]
+
+                                        char_NGT <- NGT_subset %>% 
+                                        apply(., 2, as.character) %>% 
+                                        t() %>%
+                                        as.data.frame()
+                            
+                              rownames(char_NGT)<- colnames(NGT_subset)
+                              colnames(char_NGT)<- rownames(NGT_subset)
+                          
+                          split_NGT <- split.default(char_NGT, c(1:ncol(char_NGT))) %>% lapply(., na.omit)
+                          
+    C1_matched<- match_cells(cluster = C1_input, x = split_NGT, names = names) %>% rename("V1"= "C1")
+    C2_matched<- match_cells(cluster = C2_input, x = split_NGT, names = names) %>% rename("V1"= "C2")
+    C3_matched<- match_cells(cluster = C3_input, x = split_NGT, names = names) %>% rename("V1"= "C3")
+    C4_matched<- match_cells(cluster = C4_input, x = split_NGT, names = names) %>% rename("V1"= "C4")
+    C5_matched<- match_cells(cluster = C5_input, x = split_NGT, names = names) %>% rename("V1"= "C5")
+    
+    all_matched <- cbind(C1_matched, C2_matched) %>%
+                   cbind(., C3_matched) %>%
+                   cbind(., C4_matched) %>%
+                   cbind(., C5_matched) %>%
+                      mutate(possible_matches  = ncol(NGT_subset)) %>%
+                      mutate(mismatches_allowed  = n) %>%
+                      mutate(C1_abs = (possible_matches - C1)) %>%
+                      mutate(C2_abs = (possible_matches - C2)) %>%
+                      mutate(C3_abs = (possible_matches - C3)) %>%
+                      mutate(C4_abs = (possible_matches - C4)) %>%
+                      mutate(C5_abs = (possible_matches - C5)) %>%
+                      mutate(sample = ifelse(grepl("_", rownames(.)), "doublet", ifelse(grepl("A-", rownames(.)), "A", 
+                                      ifelse(grepl("B-", rownames(.)), "B", 
+                                      ifelse(grepl("C-", rownames(.)), "C",
+                                      ifelse(grepl("D-", rownames(.)), "D", 
+                                      ifelse(grepl("E-", rownames(.)), "E", ""))))))) %>%
+                      mutate(assignment = ifelse(C1_abs >= possible_matches - n &
+                                                (C2 - C1) >= 3 & 
+                                                (C3 - C1) >= 3 &
+                                                (C4 - C1) >= 3 &
+                                                (C5 - C1) >= 3, "C1", 
+                                          ifelse(C2_abs >= possible_matches - n &
+                                                (C1 - C2) >= 3 &
+                                                (C3 - C2) >= 3 &
+                                                (C4 - C2) >= 2 &
+                                                (C5 - C2) >= 3, "C2", 
+                                          ifelse(C3_abs >= possible_matches - n &
+                                                (C1 - C3) >= 3 &
+                                                (C2 - C3) >= 3 &
+                                                (C4 - C3) >= 3 &
+                                                (C5 - C3) >= 3, "C3",                                                     
+                                          ifelse(C4_abs >= possible_matches - n &
+                                                (C1 - C4) >= 3 &
+                                                (C2 - C4) >= 2 &
+                                                (C3 - C4) >= 3 &
+                                                (C5 - C4) >= 3, "C4",                                                       
+                                          ifelse(C5_abs >= possible_matches - n &
+                                                (C1 - C5) >= 3 &
+                                                (C2 - C5) >= 3 &
+                                                (C3 - C5) >= 3 &
+                                                (C4 - C5) >= 3, "C5", "none")))))) %>%
+                      mutate(class = ifelse(sample == "A" & assignment == "C4", "OK", 
+                                     ifelse(sample == "B" & assignment == "C2", "OK", 
+                                     ifelse(sample == "C" & assignment == "C3", "OK", 
+                                     ifelse(sample == "D" & assignment == "C5", "OK", 
+                                     ifelse(sample == "E" & assignment == "C1", "OK", 
+                                     ifelse(assignment == "none", "none", "miss"))))))) %>% 
+                      mutate(percent_recovered =  100*sum(!(.$sample == "doublet") & (.$class == "OK"))/ sum(!(.$sample == "doublet") & (.$class == "OK"|.$class == "none" ))) %>% 
+                      mutate(percent_misclassified = 100*sum(.$class == "miss")/ nrow(.)) %>%
+                      rownames_to_column(., var = "Cell") %>%
+                      dplyr::select(c(possible_matches, mismatches_allowed, percent_recovered, percent_misclassified)) %>% unique() %>% as.list()
+
+                                return(all_matched)
+                          
+}
+
+```
+
+
+Here we are testing the percent of completely genotyped cells that are classified when all 9 SNPs are present, and cluster referecnes do not have to match exactly (i.e. we are test how allowing 1:9 mismatches influences classification/misclassification). The Hamming distance filters are fixed based on the Hamming distance matrix we calculated previously. 
+```{r}
+
+HD3_relax_by_one <- lapply(seq(0,9), function(n) simulate_classification_loose_filters(NGT = perfect_cells, 
+                                                                                      names = all_names_df, 
+                                                                                      n=n,
+                                                                                      C1_ref = C1_input, 
+                                                                                      C2_ref = C2_input, 
+                                                                                      C3_ref = C3_input, 
+                                                                                      C4_ref = C4_input, 
+                                                                                      C5_ref = C5_input))
+
+HD3_relax_by_one_df <- bind_rows(HD3_relax_by_one)
+HD3_relax_by_one_df$data <- "singlets + doublets"
+
+
+```
+
+Now we'll manually remove doublets from this dataset and re-run the analysis to see how misclassification rate is influenced when there are only singlets in the data. Here we are asking, is misclassification driven by the binning of doublets into samples, or by the erroneous classification of a cell from one sample into another?
+```{r}
+
+perfect_singlets <- perfect_cells[!grepl("_", rownames(perfect_cells)),] #new data to use (doublets manually removed)
+
+singlet_names_df <- perfect_singlets %>% t() %>% as.data.frame() #names to supply for this run.
+
+```
+
+
+```{r}
+
+HD3_relax_by_one_singlets <- lapply(seq(0,9), function(n) simulate_classification_loose_filters(NGT = perfect_singlets, 
+                                                                                      names = singlet_names_df, 
+                                                                                      n=n,
+                                                                                      C1_ref = C1_input, 
+                                                                                      C2_ref = C2_input, 
+                                                                                      C3_ref = C3_input, 
+                                                                                      C4_ref = C4_input, 
+                                                                                      C5_ref = C5_input))
+
+HD3_relax_by_one_singlets_df <- bind_rows(HD3_relax_by_one_singlets)
+HD3_relax_by_one_singlets_df$data <- "singlets only"
+
+```
+
+Bind data together for plotting
+```{r}
+
+HD3_relaxed_df <- rbind(HD3_relax_by_one_df, HD3_relax_by_one_singlets_df)
+
+```
+
+```{r}
+
+percent_perfect_classified_gg <- HD3_relaxed_df %>% ggplot(aes(x=mismatches_allowed, y=percent_recovered)) + 
+                                 geom_point(stat='identity', aes(col=data), size=4, show.legend = FALSE, position = position_dodge(width = 0.9)) + 
+                                 geom_linerange(aes(x = mismatches_allowed, ymin = 0, ymax = percent_recovered, colour = data), 
+                                                show.legend = FALSE,position = position_dodge(width = 0.9))+
+                                  scale_color_manual(values = c("#EA3546", "#00A7E1")) + 
+                                  theme_classic()+
+                                  theme(axis.title.x = element_text(size = 12),
+                                  axis.title.y = element_text(size = 12),
+                                  axis.text.x = element_text(size = 12),
+                                  axis.text.y = element_text(size = 12),
+                                  legend.text = element_text(size =10),
+                                  plot.title = element_text(hjust = 0.5, size = 14), 
+                                  legend.title = element_blank())+
+                                  geom_text(aes(label = sprintf("%.2f", percent_recovered)),
+                                  color="black",vjust = -1.5,
+                                          position = position_dodge(width = 0.9),
+                                          size=2.9)+
+                                  ylim(0,100)+
+                                  scale_x_continuous(breaks = seq(0,9), n.breaks = 9)+
+                                  labs(x = "Number of mismatches allowed", y = "Percent of cells classified")+
+                                    ggtitle("Percent of perfect cells successfully classified")
+                                
+
+percent_perfect_classified_gg
+  
+```
+
+```{r}
+
+percent_perfect_misclassified_gg <- HD3_relaxed_df %>% ggplot(aes(x=mismatches_allowed, y=percent_misclassified)) + 
+                                geom_point(stat='identity', aes(col=data, group = data), size=4, show.legend = FALSE, position = position_dodge(width = 0.9)) + 
+                              geom_linerange(aes(x = mismatches_allowed, ymin = 0, ymax = percent_misclassified, colour = data), show.legend = FALSE,  
+                                                 position = position_dodge(width = 0.9))+
+                                  scale_color_manual(values = c("#EA3546", "#00A7E1")) + 
+                                        theme_classic()+
+                                      theme(axis.title.x = element_text(size = 12),
+                                      axis.title.y = element_text(size = 12),
+                                      axis.text.x = element_text(size = 12),
+                                      axis.text.y = element_text(size = 12),
+                                      legend.text = element_text(size =10),
+                                      plot.title = element_text(hjust = 0.5, size = 14), 
+                                      legend.title = element_blank())+
+                                geom_text(aes(label = sprintf("%.2f", percent_misclassified), group = data),
+                                                          color="black",vjust = -1,position = position_dodge(width = 0.9),size=2.9)+
+                                ylim(0,0.15)+
+                                scale_x_continuous(breaks = seq(0,9), n.breaks = 9)+
+                                labs(x = "Number of mismatches allowed", y = "Percent of cells misclassified")+
+                                ggtitle("Percent of perfect cells misclassified")
+                                
+percent_perfect_misclassified_gg
+
+```
+
+Now we are testing how classification/misclassification is influenced when the number of available SNPs is reduced. The Hamming distance is fixed, and we require that cells have a Hamming distance of 0 to the cluster to which they are assigned. Again the Hamming distance filters are set based on the Hamming distance matrix we previously calculate; take note that Cluster 2 - Cluster 4 Hamming distance is 2, and we adjust the filter accordingly. 
+```{r}
+
+simulate_classification_missing <- function(NGT, names, n, C1_ref, C2_ref, C3_ref, C4_ref, C5_ref){
+        
+                              NGT_subset <- NGT[,sample(ncol(NGT), size = n, replace = FALSE), drop = FALSE]
+
+                                        char_NGT <- NGT_subset %>% 
+                                        apply(., 2, as.character) %>% 
+                                        t() %>%
+                                        as.data.frame()
+                            
+                              rownames(char_NGT)<- colnames(NGT_subset)
+                              colnames(char_NGT)<- rownames(NGT_subset)
+                          
+                          split_NGT <- split.default(char_NGT, c(1:ncol(char_NGT))) %>% lapply(., na.omit)
+                          
+    C1_matched<- match_cells(cluster = C1_input, x = split_NGT, names = names) %>% rename("V1"= "C1")
+    C2_matched<- match_cells(cluster = C2_input, x = split_NGT, names = names) %>% rename("V1"= "C2")
+    C3_matched<- match_cells(cluster = C3_input, x = split_NGT, names = names) %>% rename("V1"= "C3")
+    C4_matched<- match_cells(cluster = C4_input, x = split_NGT, names = names) %>% rename("V1"= "C4")
+    C5_matched<- match_cells(cluster = C5_input, x = split_NGT, names = names) %>% rename("V1"= "C5")
+    
+    all_matched <- cbind(C1_matched, C2_matched) %>%
+                   cbind(., C3_matched) %>%
+                   cbind(., C4_matched) %>%
+                   cbind(., C5_matched) %>%
+                      mutate(SNPs_selected = list(colnames(NGT_subset))) %>%
+                      mutate(possible_matches  = ncol(NGT_subset)) %>%
+                      mutate(C1_abs = (possible_matches - C1)) %>%
+                      mutate(C2_abs = (possible_matches - C2)) %>%
+                      mutate(C3_abs = (possible_matches - C3)) %>%
+                      mutate(C4_abs = (possible_matches - C4)) %>%
+                      mutate(C5_abs = (possible_matches - C5)) %>%
+                      mutate(sample = ifelse(grepl("_", rownames(.)), "doublet", ifelse(grepl("A-", rownames(.)), "A", 
+                                      ifelse(grepl("B-", rownames(.)), "B", 
+                                      ifelse(grepl("C-", rownames(.)), "C",
+                                      ifelse(grepl("D-", rownames(.)), "D", 
+                                      ifelse(grepl("E-", rownames(.)), "E", ""))))))) %>%
+                      mutate(assignment = ifelse(C1_abs >= possible_matches &
+                                                (C2 - C1) >= 3 & 
+                                                (C3 - C1) >= 3 &
+                                                (C4 - C1) >= 3 &
+                                                (C5 - C1) >= 3, "C1", 
+                                          ifelse(C2_abs >= possible_matches &
+                                                (C1 - C2) >= 3 &
+                                                (C3 - C2) >= 3 &
+                                                (C4 - C2) >= 2 & 
+                                                (C5 - C2) >= 3, "C2", 
+                                          ifelse(C3_abs >= possible_matches &
+                                                (C1 - C3) >= 3 &
+                                                (C2 - C3) >= 3 &
+                                                (C4 - C3) >= 3 &
+                                                (C5 - C3) >= 3, "C3",                                                     
+                                          ifelse(C4_abs >= possible_matches &
+                                                (C1 - C4) >= 3 &
+                                                (C2 - C4) >= 2 &
+                                                (C3 - C4) >= 3 &
+                                                (C5 - C4) >= 3, "C4",                                                       
+                                          ifelse(C5_abs >= possible_matches &
+                                                (C1 - C5) >= 3 &
+                                                (C2 - C5) >= 3 &
+                                                (C3 - C5) >= 3 &
+                                                (C4 - C5) >= 3, "C5", "none")))))) %>%
+                      mutate(class = ifelse(sample == "A" & assignment == "C4", "OK", 
+                                           ifelse(sample == "B" & assignment == "C2", "OK", 
+                                           ifelse(sample == "C" & assignment == "C3", "OK", 
+                                           ifelse(sample == "D" & assignment == "C5", "OK", 
+                                           ifelse(sample == "E" & assignment == "C1", "OK", 
+                                           ifelse(assignment == "none", "none", "miss"))))))) %>% 
+                      mutate(percent_recovered =  100*sum(!(.$sample == "doublet") & (.$class == "OK"))/ sum(!(.$sample == "doublet") & (.$class == "OK"|.$class == "none" ))) %>% 
+                      mutate(percent_misclassified = 100*sum(.$class == "miss")/ nrow(.)) %>%
+                      rownames_to_column(., var = "Cell") %>%
+                      dplyr::select(c(SNPs_selected, possible_matches, percent_recovered, percent_misclassified)) %>% unique() %>% as.list()
+
+                                return(all_matched)
+                          
+}
+
+```
+
+Running this on completely genotyped cells with all 9 SNPs genotyped recovers 87.98% of cells and misclassifies 0.0355% of cells. 
+```{r}
+
+ classified_perfect <- simulate_classification_missing(NGT = perfect_cells, names = all_names_df, n=9,
+                                                                                    C1_ref = C1_input, 
+                                                                                    C2_ref = C2_input, 
+                                                                                    C3_ref = C3_input, 
+                                                                                    C4_ref = C4_input, 
+                                                                                    C5_ref = C5_input)
+
+classified_perfect
+
+```
+
+
+```{r}
+
+ncols <- seq(1,ncol(perfect_cells), by = 1)
+
+```
+
+We now want to do this for 50 replicates over each value of n in n:9. This chunk of code takes a long time to run with 50 replicates (~3hr). 
+```{r}
+
+set.seed(1)
+
+classifications_50 <- lapply(seq(1:50), function(i) { 
+                          lapply(ncols, function(n) simulate_classification_missing(NGT = perfect_cells, names = all_names_df, n=n,
+                                                                                                                 C1_ref = C1_input, 
+                                                                                                                 C2_ref = C2_input, 
+                                                                                                                 C3_ref = C3_input, 
+                                                                                                                 C4_ref = C4_input, 
+                                                                                                                 C5_ref = C5_input))})
+
+classifications_50_bind <- bind_rows(classifications_50)
+classifications_50_bind
+
+ fifty_reps_export <-classifications_50_bind
+ fifty_reps_export$SNPs_selected <- as.character(fifty_reps_export$SNPs_selected )
+#write.csv(fifty_reps_export, "~/synmult_simmulating_classifications_50reps.csv")
+
+```
+
+Remove duplicate samples, calculate mean, SD, and number of replicates for each value of n in n:9.  
+```{r}
+
+fifty_reps <- classifications_50_bind
+fifty_reps$SNPs_selected <- lapply(fifty_reps$SNPs_selected, sort, decreasing = TRUE) #sort the SNPs
+fifty_reps_unique <- fifty_reps %>% dplyr::filter(!duplicated(SNPs_selected)) %>% #remove duplicate samples
+                     group_by(possible_matches) %>% mutate(mean_recovered = mean(percent_recovered), #calculate mean and SD for plotting
+                                                                            sd_recovered = sd(percent_recovered), 
+                                                                            mean_misclassified = mean(percent_misclassified), 
+                                                                            sd_misclassified = sd(percent_misclassified)) 
+
+table(fifty_reps_unique$possible_matches) #number of replicates per sampling of n SNPs. 
+```
+
+```{r}
+
+fifty_reps_unique_plotting <- fifty_reps_unique %>% group_by(possible_matches) %>% dplyr::filter(!duplicated(mean_recovered)) #prepare data for plotting
+
+```
+
+```{r}
+
+fifty_reps_classified_gg <- fifty_reps_unique_plotting %>% ggplot(aes(x = possible_matches, y = mean_recovered))+
+                            geom_point(color = "black", fill = "black",  size =4, shape =21)+
+                            geom_line()+
+                            geom_errorbar(aes(ymin=mean_recovered-sd_recovered, ymax=mean_recovered+sd_recovered), width=.1,position=position_dodge(.9))+
+                            scale_fill_manual(values = rev(c(tol(5))))+
+                                        theme_classic()+
+                                        theme(axis.title.x = element_text(size = 12),
+                                            axis.title.y = element_text(size = 12),
+                                             axis.text.x = element_text(size = 12),
+                                              axis.text.y = element_text(size = 12),
+                                              legend.text = element_text(size =10),
+                                              plot.title = element_text(hjust = 0.5, size = 14))+
+                            ylim(-10,100)+
+                            scale_x_continuous(breaks = seq(0,9), n.breaks = 9)+
+                            labs(x = "Number of SNPs sampled",y = "Avg. $ of cells classified")+
+                            ggtitle("Classification rate for perfect cells")
+
+
+fifty_reps_misclassified_gg <- fifty_reps_unique_plotting %>% ggplot(aes(x = possible_matches, y = mean_misclassified))+
+                              geom_point(color = "black", fill = "black",  size =4, shape =21)+
+                              geom_line()+
+                              geom_errorbar(aes(ymin=mean_misclassified-sd_misclassified, ymax=mean_misclassified+sd_misclassified), width=.1,position=position_dodge(.9))+
+                              scale_fill_manual(values = rev(c(tol(5))))+
+                                          theme_classic()+
+                                          theme(axis.title.x = element_text(size = 12),
+                                              axis.title.y = element_text(size = 12),
+                                               axis.text.x = element_text(size = 12),
+                                                axis.text.y = element_text(size = 12),
+                                                legend.text = element_text(size =10),
+                                                plot.title = element_text(hjust = 0.5, size = 14))+
+                              ylim(-.03,0.3)+
+                              scale_x_continuous(breaks = seq(0,9), n.breaks = 9)+
+                              labs(x = "Number of SNPs sampled",y = "Avg. % of cells misclassified")+
+                              ggtitle("Misclassification rate for perfect cells")
+
+
+```
+
+
+
+Now we'll classify the whole dataset using these filtering heuristics, in which we require a cell to be a Hamming distance of at >=3 to all clusters except the one it is being binned into. This is with the exception of cluster 2 and cluster 4, which have a Hamming distance of 2 to one another, so the filter is >=2 for these pairs. 
+```{r}
+
+C1_filtered<- match_master %>% 
+              dplyr::filter(C1_abs >= possible_matches)  %>%
+              dplyr::filter((C1_abs - C2_abs) >= 3 & 
+                            (C1_abs - C3_abs) >= 3 & 
+                            (C1_abs - C4_abs) >= 3 &
+                            (C1_abs - C5_abs) >= 3)
+
+C2_filtered<- match_master %>% 
+              dplyr::filter(C2_abs >= possible_matches)  %>%
+              dplyr::filter((C2_abs - C1_abs) >= 3 & 
+                            (C2_abs - C3_abs) >= 3 & 
+                            (C2_abs - C4_abs) >= 2 &
+                            (C2_abs - C5_abs) >= 3)
+
+C3_filtered<- match_master %>% 
+              dplyr::filter(C3_abs >= possible_matches)  %>%
+              dplyr::filter((C3_abs - C1_abs) >= 3 & 
+                            (C3_abs - C2_abs) >= 3 & 
+                            (C3_abs - C4_abs) >= 3 &
+                            (C3_abs - C5_abs) >= 3)  
+
+C4_filtered<- match_master %>% 
+              dplyr::filter(C4_abs >= possible_matches)  %>%
+              dplyr::filter((C4_abs - C1_abs) >= 3 & 
+                            (C4_abs - C2_abs) >= 2 & 
+                            (C4_abs - C3_abs) >= 3 &
+                            (C4_abs - C5_abs) >= 3)
+
+C5_filtered<- match_master %>% 
+              dplyr::filter(C5_abs >= possible_matches)  %>%
+              dplyr::filter((C5_abs - C1_abs) >= 3 & 
+                            (C5_abs - C2_abs) >= 3 & 
+                            (C5_abs - C3_abs) >= 3 &
+                            (C5_abs - C4_abs) >= 3)
+                              
+
+```
+
+Subset final cells per cluster
+```{r, }
+
+C1_final<- master_NGT_with_doublets %>% subset(Cell %in% rownames(C1_filtered)) %>% dplyr::select(!Sample)
+C2_final<- master_NGT_with_doublets %>% subset(Cell %in% rownames(C2_filtered)) %>% dplyr::select(!Sample)
+C3_final<- master_NGT_with_doublets %>% subset(Cell %in% rownames(C3_filtered)) %>% dplyr::select(!Sample)
+C4_final<- master_NGT_with_doublets %>% subset(Cell %in% rownames(C4_filtered)) %>% dplyr::select(!Sample)
+C5_final<- master_NGT_with_doublets %>% subset(Cell %in% rownames(C5_filtered)) %>% dplyr::select(!Sample)
+
+dim(C1_final)
+dim(C2_final)
+dim(C3_final)
+dim(C4_final)
+dim(C5_final)
+
+```
+
+```{r}
+
+C1_cells <- C1_final$Cell %>% 
+            as.data.frame() %>% 
+            rename("." = "Cell") %>% 
+            mutate(Sample = ifelse(grepl("_", Cell), "doublet", ifelse(grepl("A-", Cell), "A", 
+                                                                ifelse(grepl("B-", Cell), "B", 
+                                                                ifelse(grepl("C-", Cell), "C",
+                                                                ifelse(grepl("D-", Cell), "D", 
+                                                                ifelse(grepl("E-", Cell), "E", "")))))))
+                                                                                         
+C2_cells <- C2_final$Cell %>% 
+            as.data.frame() %>% 
+            rename("." = "Cell") %>% 
+            mutate(Sample = ifelse(grepl("_", Cell), "doublet", ifelse(grepl("A-", Cell), "A", 
+                                                                ifelse(grepl("B-", Cell), "B", 
+                                                                ifelse(grepl("C-", Cell), "C",
+                                                                ifelse(grepl("D-", Cell), "D", 
+                                                                ifelse(grepl("E-", Cell), "E", "")))))))
+
+C3_cells <- C3_final$Cell %>% 
+            as.data.frame() %>% 
+            rename("." = "Cell") %>% 
+            mutate(Sample = ifelse(grepl("_", Cell), "doublet", ifelse(grepl("A-", Cell), "A", 
+                                                                ifelse(grepl("B-", Cell), "B", 
+                                                                ifelse(grepl("C-", Cell), "C",
+                                                                ifelse(grepl("D-", Cell), "D", 
+                                                                ifelse(grepl("E-", Cell), "E", "")))))))
+
+C4_cells <- C4_final$Cell %>% 
+            as.data.frame() %>% 
+            rename("." = "Cell") %>% 
+            mutate(Sample = ifelse(grepl("_", Cell), "doublet", ifelse(grepl("A-", Cell), "A", 
+                                                                ifelse(grepl("B-", Cell), "B", 
+                                                                ifelse(grepl("C-", Cell), "C",
+                                                                ifelse(grepl("D-", Cell), "D", 
+                                                                ifelse(grepl("E-", Cell), "E", "")))))))
+
+C5_cells <- C5_final$Cell %>% 
+            as.data.frame() %>% 
+            rename("." = "Cell") %>% 
+            mutate(Sample = ifelse(grepl("_", Cell), "doublet", ifelse(grepl("A-", Cell), "A", 
+                                                                ifelse(grepl("B-", Cell), "B", 
+                                                                ifelse(grepl("C-", Cell), "C",
+                                                                ifelse(grepl("D-", Cell), "D", 
+                                                                ifelse(grepl("E-", Cell), "E", "")))))))
+
+```
+
+Tally number of cells from each sample in each cluster to get the sample ID. Then if else to mutate a new column - classified if right, misclassified if not classified. 
+```{r}
+
+table(C1_cells$Sample) 
+table(C2_cells$Sample) 
+table(C3_cells$Sample) 
+table(C4_cells$Sample) 
+table(C5_cells$Sample) 
+
+```
+
+Determine actual classification rate and misclassification rate for each cluster.
+```{r}
+
+C1_cell_classification <- C1_cells %>% mutate(Class = ifelse(Sample == "E", "OK", "Misclassified"))
+C2_cell_classification <- C2_cells %>% mutate(Class = ifelse(Sample == "B", "OK", "Misclassified"))
+C3_cell_classification <- C3_cells %>% mutate(Class = ifelse(Sample == "C", "OK", "Misclassified"))
+C4_cell_classification <- C4_cells %>% mutate(Class = ifelse(Sample == "A", "OK", "Misclassified"))
+C5_cell_classification <- C5_cells %>% mutate(Class = ifelse(Sample == "D", "OK", "Misclassified"))
+
+classification_df <- rbind(C1_cell_classification, C2_cell_classification) %>%
+                     rbind(., C3_cell_classification) %>%
+                     rbind(., C4_cell_classification) %>%
+                     rbind(., C5_cell_classification)
+
+```
+
+What percent of the starting data did we correctly classify?
+```{r}
+
+classification_rate <- sum(classification_df$Class == "OK")/nrow(master_NGT)*100
+
+classification_rate
+
+```
+
+Of the data we assigned to clusters, what percent was misclassified?
+```{r}
+
+misclassification_rate <- sum(classification_df$Class == "Misclassified")/ (sum(classification_df$Class == "OK") + sum(classification_df$Class == "Misclassified"))*100
+  
+misclassification_rate
+
+```
+
+Visualize classification: heatmap with pathogenic mutations + highlight misclassified cells and doublets. Also include barplot showing cell number for each sample.
+```{r}
+SNP_ids <- interesting_SNPs 
+all_cells_order <- c("A", "B", "C","D","E", "doublet")
+
+all_cells <- rbind(C4_final, C2_final) %>% 
+              rbind(., C3_final) %>% 
+              rbind(., C5_final) %>% 
+              rbind(., C1_final) %>% 
+              dplyr::select(c(Cell,SNP_ids$id )) %>% 
+              mutate(Sample = ifelse(grepl("_", Cell), "doublet", 
+                              ifelse(grepl("A-", Cell), "A", 
+                              ifelse(grepl("B-", Cell), "B", 
+                              ifelse(grepl("C-", Cell), "C",
+                              ifelse(grepl("D-", Cell), "D", 
+                              ifelse(grepl("E-", Cell), "E", "")))))))
+
+all_cells$Sample <- factor(all_cells$Sample, levels = all_cells_order)
+all_cells_ordered <- all_cells[order(all_cells$Sample), ] %>% column_to_rownames(., var = "Cell")
+all_cells_ordered[is.na(all_cells_ordered)]<-3
+
+
+sample_anno2 <- all_cells_ordered %>% dplyr::select(Sample)
+anno_colors2 <- rev(glasbey(15))
+names(anno_colors2) <- unique(sample_anno2$Sample)
+anno_colors2 <- list(Sample = anno_colors2)
+
+
+pheatmap((all_cells_ordered %>% dplyr::select(!Sample)), 
+            show_colnames =  FALSE,
+            show_rownames = FALSE, 
+             cluster_cols = FALSE, 
+             cluster_rows = FALSE, 
+             fontsize = 14,
+             annotation_row = sample_anno2, 
+             annotation_colors = anno_colors2,
+             color = c("#E5DADA","#840032","#002642","#7D8491"), 
+             border_color = "black")
+
+```
