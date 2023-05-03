@@ -1,0 +1,1531 @@
+---
+title: "scMRD_demultiplexing_MRD1"
+author: "TR"
+date: "2023-05-01"
+output: html_document
+---
+
+Run MRD1 is different from MRD2-6 in that it contains positive control spike-in cells from one AML sample. Since these cells are not useful for the manuscript analysis, we removed these cells before demultiplexing. For a more standardized approach to demultiplexing, refer to the code in "scMRD_demultiplexing. 
+```{r, message=FALSE}
+
+library(tidyverse)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(umap)
+library(pals)
+library(cluster)
+library(ClusterR)
+library(pheatmap)
+library(superheat)
+library(cultevo)
+library(cowplot)
+library(lsa)
+library(factoextra)
+library(NbClust)
+library(VariantAnnotation)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(tidyverse)
+library(pdist)
+library(magrittr)
+library(RColorBrewer)
+library(ggpubr)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(SNPlocs.Hsapiens.dbSNP144.GRCh37)
+library(biomaRt)
+
+file <- c("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX_scDNA_h5_files/WX_MRD1.dna+protein.h5") #read in .h5 file
+
+```
+
+Functions needed to extract data from the .h5 file
+```{r}
+
+read_tapestri_h5_NGT <- function (file, VAF_cutoff = 0.005, GT_cutoff = 20) 
+                        {
+                            NGT <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT")
+                            NGT[NGT == 3] <- NA
+                            VAF_select <- which(apply(NGT, MARGIN = 1, function(x) {
+                                (sum(!is.na(x))/length(x)) * 100 >= GT_cutoff & (sum(x, 
+                                    na.rm = TRUE)/(sum(!is.na(x)) * 2)) >= VAF_cutoff
+                            }))
+                            NGTlim <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT", 
+                                index = list(VAF_select, NULL))
+                            NGTlim[NGTlim == 3] <- NA
+                            rownames(NGTlim) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id", 
+                                index = list(VAF_select))
+                            colnames(NGTlim) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ra/barcode")
+                            return(NGTlim)
+}
+
+
+quality_filter_NGT <- function (file, NGT, DP_cut = 10, AF_cut = 20, GQ_cut = 20) 
+                      {
+                          variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+                          select_variants <- match(rownames(NGT), variants)
+                          AF <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/AF", 
+                              index = list(select_variants, NULL))
+                          DP <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/DP", 
+                              index = list(select_variants, NULL))
+                          GQ <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/GQ", 
+                              index = list(select_variants, NULL))
+                          NGT_filter <- data.frame(setNames(data.frame(AF, variants = rownames(NGT)), 
+                              c(tidyselect::all_of(colnames(NGT)), "variants")) %>% 
+                              tidyr::pivot_longer(cols = !c(variants), names_to = "Cell", 
+                                  values_to = "AF"), data.frame(DP) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+                              names_to = "Cell", values_to = "DP") %>% dplyr::select(DP), 
+                              data.frame(GQ) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+                                  names_to = "Cell", values_to = "GQ") %>% dplyr::select(GQ), 
+                              data.frame(NGT) %>% tidyr::pivot_longer(cols = tidyselect::everything(), 
+                                  names_to = "Cell", values_to = "NGT") %>% dplyr::select(NGT)) %>% 
+                              dplyr::filter(DP >= DP_cut & GQ >= GQ_cut) %>% dplyr::mutate(pass = dplyr::case_when(NGT == 
+                              1 & (AF > AF_cut) & (AF < (100 - AF_cut)) ~ "include", 
+                              NGT == 1 & ((AF <= AF_cut) | (AF >= (100 - AF_cut))) ~ 
+                                  "exclude", NGT == 2 & AF >= (100 - AF_cut) ~ "include", 
+                              NGT == 2 & AF < (100 - AF_cut) ~ "exclude", NGT == 0 & 
+                                  AF <= AF_cut ~ "include", NGT == 0 & AF > AF_cut ~ 
+                                  "exclude", TRUE ~ "other")) %>% dplyr::filter(.data$pass == 
+                              "include") %>% tidyr::pivot_wider(id_cols = .data$Cell, 
+                              names_from = .data$variants, values_from = .data$NGT)
+                          return(NGT_filter)
+                      }
+
+read_tapestri_h5_AF <- function (file)
+                         {
+                             AF <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/AF")
+                             rownames(AF) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+                             colnames(AF) <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ra/barcode")
+                            return(AF)
+                        }
+
+quality_filter_AF <- function (file, AF, DP_cut = 10, AF_cut = 20, GQ_cut = 20)
+                      {
+                          variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id")
+                          select_variants <- match(rownames(AF), variants)
+                          NGT <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/NGT",
+                              index = list(select_variants, NULL))
+                          DP <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/DP",
+                              index = list(select_variants, NULL))
+                          GQ <- rhdf5::h5read(file = file, name = "/assays/dna_variants/layers/GQ",
+                              index = list(select_variants, NULL))
+                          NGT_filter <- data.frame(setNames(data.frame(NGT, variants = rownames(AF)),
+                              c(tidyselect::all_of(colnames(AF)), "variants")) %>%
+                              tidyr::pivot_longer(cols = !c(variants), names_to = "Cell",
+                                  values_to = "NGT"), data.frame(DP) %>% tidyr::pivot_longer(cols = tidyselect::everything(),
+                              names_to = "Cell", values_to = "DP") %>% dplyr::select(DP),
+                              data.frame(GQ) %>% tidyr::pivot_longer(cols = tidyselect::everything(),
+                                  names_to = "Cell", values_to = "GQ") %>% dplyr::select(GQ),
+                              data.frame(AF) %>% tidyr::pivot_longer(cols = tidyselect::everything(),
+                                  names_to = "Cell", values_to = "AF") %>% dplyr::select(AF)) %>%
+                              dplyr::filter(DP >= DP_cut & GQ >= GQ_cut) %>% dplyr::mutate(pass = dplyr::case_when(NGT ==
+                              1 & (AF > AF_cut) & (AF < (100 - AF_cut)) ~ "include",
+                              NGT == 1 & ((AF <= AF_cut) | (AF >= (100 - AF_cut))) ~
+                                  "exclude", NGT == 2 & AF >= (100 - AF_cut) ~ "include",
+                              NGT == 2 & AF < (100 - AF_cut) ~ "exclude", NGT == 0 &
+                                  AF <= AF_cut ~ "include", NGT == 0 & AF > AF_cut ~
+                                  "exclude", TRUE ~ "other")) %>%
+                              dplyr::filter(.data$pass == "include") %>%
+                              tidyr::pivot_wider(id_cols = .data$Cell,
+                              names_from = .data$variants, values_from = .data$AF)
+                          return(NGT_filter)
+                     }
+
+
+```
+
+Load in the manually curated transcript ID table and annotation key. More detailed information for generating the transcript ID table can be found here: https://bowmanr.github.io/scDNA_myeloid/hdf5-and-loom-input.html (this is also overall an excellent resource for scDNA+protein analysis). 
+```{r,variant selection setup,message=FALSE,warning=FALSE}
+
+annotation_key <-read.csv("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/annotation_key_RUNX1C_geneid.csv")
+annotation_key$GENEID<- NULL
+
+hg19refseq_txdb<-loadDb("/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/MBio_scDNA_keys/hg19refseq_txdb_new.sqlite")
+
+annotation_key%<>%inner_join(VariantAnnotation::select(hg19refseq_txdb,
+                                    keys=annotation_key$ccds_id,
+                                    columns=c("TXID","TXNAME"),
+                                    keytype = "TXNAME"),
+                                    by=c("ccds_id"="TXNAME"))%>%
+                                    mutate(TXID=as.character(TXID))
+
+```
+
+
+Read in the numerical genotyping (NGT) matrix from the H5 file, setting the desired cutoffs for mutation VAF (0.1%) and genotyping call rate (20%). This can take some time to load, so it is recommended to do this once and export the NGT as an RDS file for future use. I have previously exported the NGT matrix as an RDS, so I am just loading it here.
+```{r, NGT extraction}
+
+# #NGT<-read_tapestri_h5_NGT(file,
+#                           VAF_cutoff = 0.001,
+#                           GT_cutoff = 20 )
+
+NGT<- readRDS(file = "MRD1_NGT.rds")
+
+```
+
+
+Filter the NGT matrix based on the recommended cutoffs. This will get rid of low quality genotypes based on read depth (DP), genotype quality score (GQ), and allele frequency (AF). 
+```{r,message=FALSE}
+
+# filtered_NGT<-quality_filter_NGT(file=file,
+                # NGT=NGT,
+                # DP_cut=10,
+                # AF_cut=20,
+                # GQ_cut=30)
+
+filtered_NGT_1 <- readRDS(file = "MRD1_filtered_NGT.rds")
+
+```
+
+Extract the allele frequency (AF) matrix from the .h5 file.
+```{r}
+
+#AF_matrix<- read_tapestri_h5_AF(file)
+#AF_matrix_subset<- AF_matrix[rownames(NGT),]
+
+#saveRDS(AF_matrix_subset, file = "MRD1_AF_matrix_subset.rds")
+
+AF_matrix_subset<- readRDS(file = "MRD1_AF_matrix_subset.rds")
+
+```
+
+Extract and filter the AF matrix based on cutoffs described above. 
+```{r, filtered AF matrix}
+
+# #filtered_AF<-quality_filter_AF(file=file,
+#                                  AF=AF_matrix_subset,
+#                                  DP_cut=10, 
+#                                  AF_cut=20,
+#                                  GQ_cut=30)
+
+#saveRDS(filtered_AF, file = "MRD1_filtered_AF.rds")
+
+filtered_AF_1 <- readRDS(file = "MRD1_filtered_AF.rds")
+
+```
+
+
+For this multiplexed run, we spiked in an AML sample (non-MRD, with known mutations) at a high percentage (>70%). These cells are not useful for our purposes here, so we will filter them out based on the presence of known mutations. After this step, there may still be a low number of residual cells present in the data, but we will be able to identify these cells and remove them at a later part of the analysis.  
+```{r, }
+
+filtered_NGT <- filtered_NGT_1[!(filtered_NGT_1$`chr21:36231792:C/T` == 1 | 
+                                 filtered_NGT_1$`chr21:36231792:C/T` == 2 | 
+                                 filtered_NGT_1$`chr2:209113113:G/A` == 1 | 
+                                 filtered_NGT_1$`chr2:209113113:G/A` == 2 | 
+                                 filtered_NGT_1$`chr2:25457242:C/T` == 1  | 
+                                 filtered_NGT_1$`chr2:25457242:C/T` == 2 ),] %>%
+                                 dplyr::filter(!is.na(.$Cell))
+
+filtered_AF <- filtered_AF_1 %>% dplyr::filter(Cell %in% filtered_NGT$Cell)
+
+dim(filtered_NGT)
+dim(filtered_AF)
+
+```
+
+
+Format data and annotate variants using the `GenomicRanges` and `VariantAnnotation` packages.
+```{r,message=FALSE, warning=FALSE}
+
+variants <- rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/id") #all variants
+select_variants <- setdiff(colnames(filtered_NGT), "Cell") #variants in the NGT (influenced by VAF and GT cutoffs)
+
+SNV_mat <- data.frame(do.call(cbind, rhdf5::h5read(file = file, name = "/assays/dna_variants/ca/"))) %>%
+                      dplyr::filter(.data$id %in% tidyselect::all_of(select_variants))%>% 
+                      dplyr::mutate(ALT = gsub("\\*","N", .data$ALT))%>% 
+                      dplyr::mutate(REF = gsub("\\*","N", .data$REF))%>% 
+                      dplyr::mutate(CHROM = paste0("chr",.data$CHROM)) 
+
+SNV_mat$REF <- as(SNV_mat$REF, "DNAStringSet")
+SNV_mat$ALT <- as(SNV_mat$ALT, "DNAStringSet")
+
+variant_gRange <- GenomicRanges::makeGRangesFromDataFrame(SNV_mat, 
+                  seqnames.field = "CHROM", start.field = "POS", end.field = "POS", 
+                  keep.extra.columns = TRUE)
+  
+variant_gRange$QUERYID <- 1:length(variant_gRange)
+
+all_variants <- VariantAnnotation::locateVariants(query = variant_gRange, 
+                                                          subject = hg19refseq_txdb, region = 
+                                                          VariantAnnotation::AllVariants()) %>% 
+                                                          data.frame()
+
+coding_variants <- VariantAnnotation::predictCoding(query = variant_gRange, 
+                                                    subject = hg19refseq_txdb, 
+                                                    seqSource = Hsapiens, varAllele = variant_gRange$ALT) %>%
+                                                    data.frame()
+                                                    coding_variants$LOCATION<- "coding"                                  
+    
+intronic_variants <- all_variants %>% 
+                     plyranges::filter(as.character(.data$LOCATION) != c("coding")) %>%
+                     plyranges::filter(as.character(.data$LOCATION) != c("promoter")) %>%
+                     dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+spliceSite_variants <- all_variants %>% 
+                       plyranges::filter(as.character(.data$LOCATION) == c("spliceSite")) %>%
+                       dplyr::inner_join(variant_gRange, by = "QUERYID", copy = TRUE)
+
+splice_intronic <- dplyr::bind_rows(intronic_variants, spliceSite_variants)
+
+out <- dplyr::bind_rows(splice_intronic, coding_variants) %>% 
+       dplyr::inner_join(annotation_key) %>% 
+       dplyr::mutate(AA = case_when(
+          .data$CONSEQUENCE == "nonsynonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "frameshift" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "nonsense" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "synonymous" ~ paste0(.data$gene_name, ".", .data$REFAA, .data$PROTEINLOC,.data$VARAA),
+          .data$CONSEQUENCE == "not translated" ~ paste0(.data$gene_name, ".not_txl"),
+          .data$LOCATION == "spliceSite" ~ paste0(.data$gene_name, ".splice"),
+          .data$LOCATION == "intron" ~ paste0(.data$gene_name, ".intron")))
+```
+
+Aggregate the annotated variant information, bulk VAF, genotyping call rate, etc. into a dataframe named `final_mutation_info`.
+```{r}
+
+final_mutation_info <- data.frame(Bulk_VAF = apply(filtered_NGT %>% 
+                                            dplyr::select(!.data$Cell), MARGIN = 2, function(x) {
+                                            (sum(x, na.rm = TRUE)/(sum(!is.na(x)) * 2)) * 100
+                                            }), GT_call_rate = apply(filtered_NGT %>% dplyr::select(!.data$Cell), 
+                                            MARGIN = 2, function(x) {
+                                            100 - (sum(is.na(x))/length(x) * 100)
+                                            }), id = colnames(filtered_NGT)[colnames(filtered_NGT) !="Cell"])%>% 
+                                            dplyr::inner_join(out, by = "id")
+
+head(final_mutation_info,5)
+
+```
+
+Now we'll pull SNPs from the h.sapiens ENSEMBL SNP mart, and format our list of variants to then identify SNPs that were genotyped in our dataset. This is first achieved below for coding SNPs, which are annotated and then filtered to remove pathogenic variants and SNPs with MAF >0.5. We include the MAF filter to enrich our list for SNPs that are more likely to have divergent genotypes between samples in the multiplex. We end up with a dataframe `coding_SNPs_final`, which has candidate SNPs to use for demultiplexing. 
+```{r}
+
+genome <- BSgenome.Hsapiens.UCSC.hg19
+          seqlevelsStyle(genome) <- "NCBI"
+
+all_snps <- SNPlocs.Hsapiens.dbSNP144.GRCh37
+
+snp_mart <- useEnsembl(biomart="ENSEMBL_MART_SNP", 
+                       host="grch37.ensembl.org", 
+                       dataset="hsapiens_snp")
+
+position_coding<- final_mutation_info %>% 
+                  dplyr::filter(LOCATION %in% c("coding")) %>%
+                  dplyr::select(seqnames,start, end)
+                                          
+position_coding$seqnames<-gsub("chr","",position_coding$seqnames)
+  names(position_coding)[names(position_coding)== "seqnames"]<- "CHR"
+
+position_coding$start<- as.character(position_coding$start)
+position_coding$end<- as.character(position_coding$end)
+
+coding_positions <- GPos(seqnames = position_coding$CHR, pos = position_coding$start)
+coding_SNPs <- snpsByOverlaps(all_snps, coding_positions, genome = genome)
+coding_SNPs_df <- data.frame(chr_pos = start(coding_SNPs), mcols(coding_SNPs)[,c("RefSNP_id", "ref_allele", "alt_alleles")])
+
+coding_SNPs_annotated<-  getBM(attributes=c("refsnp_source",
+                                            "refsnp_id",
+                                             "chr_name",
+                                             "chrom_start",
+                                             "chrom_end",
+                                             "consequence_type_tv", 
+                                             "clinical_significance", 
+                                            "minor_allele_freq"	), filters = "snp_filter", 
+                                                                   values = coding_SNPs_df$RefSNP_id, 
+                                                                   mart = snp_mart)
+
+nonpath_coding_SNPs <- coding_SNPs_annotated[!grepl("pathogenic",coding_SNPs_annotated$clinical_significance),]%>%                       
+                       dplyr::filter(is.na(minor_allele_freq ) | minor_allele_freq < 0.5)
+
+coding_SNPs_final <- subset(final_mutation_info, start %in% nonpath_coding_SNPs$chrom_start)
+
+
+```
+
+This process is repeated to identify nonpathogenic intronic SNPs below. 
+```{r}
+
+position_intron <- final_mutation_info %>% dplyr::filter(LOCATION %in% c("intron")) %>%
+                                           dplyr::select(seqnames.x,start.x, end.x)
+
+position_intron$seqnames<-gsub("chr","",position_intron$seqnames)
+names(position_intron)[names(position_intron)== "seqnames"]<- "CHR"
+
+position_intron$start<- as.character(position_intron$start)
+position_intron$end<- as.character(position_intron$end)
+
+genome <- BSgenome.Hsapiens.UCSC.hg19
+all_snps <- SNPlocs.Hsapiens.dbSNP144.GRCh37
+seqlevelsStyle(genome) <- "NCBI"
+intron_positions <- GPos(seqnames = position_intron$CHR, pos = position_intron$start)
+intron_SNPs <- snpsByOverlaps(all_snps, intron_positions, genome = genome)
+intron_SNPs_df <- data.frame(chr_pos = start(intron_SNPs), mcols(intron_SNPs)[,c("RefSNP_id", "ref_allele", "alt_alleles")])
+
+
+intron_SNPs_annotated<-  getBM(attributes=c("refsnp_source",
+                                            'refsnp_id',
+                                             'chr_name',
+                                             'chrom_start',
+                                             'chrom_end',
+                                             "consequence_type_tv", 
+                                             "clinical_significance", 
+                                             "minor_allele_freq"	), filters = 'snp_filter', 
+                                                                       values = intron_SNPs_df$RefSNP_id, 
+                                                                       mart = snp_mart)
+
+
+intron_SNPs_filtered <- intron_SNPs_annotated[!grepl("pathogenic",intron_SNPs_annotated$clinical_significance),] %>%
+                        dplyr::filter(is.na(minor_allele_freq ) | minor_allele_freq < 0.5)
+
+
+intron_SNPs_final <- subset(final_mutation_info, start.x %in% intron_SNPs_filtered$chrom_start)
+
+```
+
+Intronic and coding SNPs are then merged, and used to subset the `filtered_AF` dataframe and identify a list of all possible candidate SNPs for demultiplexing. This list will continue to be filtered down, as you will see over the next few chunks of code. 
+```{r}
+
+intron_and_coding_SNPs <- rbind(coding_SNPs_final, intron_SNPs_final) %>% dplyr::filter(!CONSEQUENCE %in% c("nonsense","frameshift"))
+
+candidate_SNPs <- filtered_AF %>% 
+                  column_to_rownames(., var = "Cell") %>%
+                  dplyr::select(c(intron_and_coding_SNPs$id))
+
+```
+
+
+Since we're concerned with selecting SNPs that are sufficiently divergent between the samples included in the multiplex, we apply an additional filter to only include SNPs which have divergent genotypes (i.e. WT or HET, WT or HOM, HET or HOM ) in a set number of cells, which is defined as:
+
+`n_required` = ((`n_cells_in_multiplexed_run`) x (`n_samples_in_multiplex`)) x (10^-3)
+
+This calculation is based on the reasoning that the fraction of cells that must be divergent in genotype for demultiplexing is proportional to the size of the data set and the number of samples included in the multiplex. Based on an estimated false positive rate of 10^-3 for the TapestriV2 platform, the product of these values is adjusted accordingly. 
+```{r}
+
+n_required <- (nrow(filtered_NGT)*7)/1000
+
+WT_HET_HOM_columns <- apply(candidate_SNPs, 2, function(x){
+                            (sum(x < 20, na.rm  = TRUE) >= n_required & (sum(x >= 20  & x <= 80, na.rm  = TRUE) >= n_required |
+                             sum(x > 80 & x <= 100, na.rm  = TRUE) >= n_required))}) %>% 
+                             as.data.frame() %>% rename(. = "CONDITION_1") %>% 
+                             rownames_to_column(., var = "id")
+
+
+HET_HOM_columns <- apply(candidate_SNPs, 2, function(x){
+                         sum(x >= 20  & x <= 80, na.rm  = TRUE) >= n_required & sum(x > 80 & x <= 100, na.rm  = TRUE) >= n_required}) %>% 
+                         as.data.frame() %>% 
+                         rename(. = "CONDITION_2") %>% 
+                         rownames_to_column(., var = "id")
+
+```
+
+After applying these filters, we select the top 20 SNPs with the highest genotyping rate. 
+```{r}
+
+#identify SNPs that pass at least 1 condition
+satisfied_conditions<- merge(WT_HET_HOM_columns,HET_HOM_columns, by = "id" ) %>% 
+                       dplyr::filter(CONDITION_1 == "TRUE" | CONDITION_2 == "TRUE" )  
+
+SNP_list <- final_mutation_info %>% subset(id %in% satisfied_conditions$id) %>%
+            arrange(desc(GT_call_rate))
+
+SNPs_to_start<- final_mutation_info %>% subset(id %in% satisfied_conditions$id) %>%
+                subset(!AA %in% "DNMT3A.V636L") %>% #this is a pathogenic variant that slipped through
+                arrange(desc(GT_call_rate)) %>%
+                head(20)
+
+```
+
+```{r}
+
+AF_matrix_20_SNPs <- column_to_rownames(filtered_AF, var = "Cell") %>% .[SNPs_to_start$id]
+
+tally_perfect_20 <- rowSums(is.na(AF_matrix_20_SNPs)) %>%  #select cells with complete genotyping information for the subset of 20 SNPs
+                   as.data.frame() %>%
+                   mutate(percent = ./nrow(SNPs_to_start)*100) %>%
+                   dplyr::filter(percent <1) 
+
+complete_20_cells <- AF_matrix_20_SNPs[rownames(tally_perfect_20),] #matrix with completely genotyped cells and top 20 SNPs
+
+dim(complete_20_cells) 
+
+```
+
+We then want to exclude extraneous SNPs that won't add value to our analysis. We achieve this by running a principal component analysis and calculating the proportion of variance contributed by each SNP. Applying a filter to select the SNPs that contribute a cumuluative proportion of variance >= 0.99 yields us 13 SNPs to use for demultiplexing. 
+```{r}
+
+PCA <- prcomp(complete_20_cells)
+pov <- PCA$sdev^2 / sum(PCA$sdev^2)
+cumulative_pov <- cumsum(pov)
+top_PCS <- PCA$rotation[1:(which(cumulative_pov >= .99)[1]),] %>% as.data.frame()
+
+nrow(top_PCS) #13 SNPs
+```
+
+
+We then re-subset our starting allele frequency data (`filtered_AF`) on cells with complete genotyping for these 14 SNPs. This is stored as `clustering_AF_matrix`.
+```{r}
+
+AF_matrix_SNPs <- column_to_rownames(filtered_AF, var = "Cell") %>% .[rownames(top_PCS)]
+
+Cell_NA_tally <- rowSums(is.na(AF_matrix_SNPs)) %>%  #select cells with perfect genotyping information for the subset of SNPs
+                 as.data.frame() %>%
+                 mutate(percent = ./nrow(top_PCS)*100) %>%
+                 dplyr::filter(percent <1) 
+
+clustering_AF_matrix <- AF_matrix_SNPs[rownames(Cell_NA_tally),]
+dim(clustering_AF_matrix) 
+
+```
+
+Next, we run K-means clustering with the `clustering_AF_matrix`, setting the number of centers equal to the number of unique samples within the multiplex (in this case, 7 samples). For visualization purposes, we run UMAP analysis on SNP allele frequencies, with n_neighbors set to the square root of the total number of cells in the `clustering_AF_matrix`. 
+```{r, kmeans + UMAP}
+
+set.seed(1)
+
+kmeans_AF <- kmeans(clustering_AF_matrix, centers = 7, nstart = 30)
+
+umap_SNPs <- umap(clustering_AF_matrix, n_neighbors = sqrt(nrow(clustering_AF_matrix))) 
+
+cell_cluster <- kmeans_AF$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+umap_df <- umap_SNPs$layout %>%
+           as.data.frame() %>% 
+           merge(., cell_cluster, by = 0) %>% 
+           column_to_rownames(., var = "Row.names")
+
+names(umap_df)[names(umap_df)== "V1"] <- "UMAP1"
+names(umap_df)[names(umap_df)== "V2"] <- "UMAP2"
+umap_df$Cluster <- as.character(umap_df$Cluster)
+
+           umap_df %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                        geom_point(aes( fill = Cluster), color = "black",alpha = .6, size =2, shape =21)+
+                        scale_fill_manual(values = rev(c(tol(7))))+
+                        theme_classic()+
+                        theme(axis.title.x = element_text(size = 12),
+                              axis.title.y = element_text(size = 12),
+                              axis.text.x = element_text(size = 10),
+                              axis.text.y = element_text(size = 10),
+                              legend.text = element_text(size =10),
+                              plot.title = element_text(hjust = 0.5, size = 14))+
+                        labs(x = "UMAP1",y = "UMAP2")
+    
+```
+
+Now we'll take a look at how well the SNPs are separating into each cluster. We can generate a SNP-cluster heatmap using the Superheat package.
+```{r}
+
+cluster_df <- kmeans_AF$cluster %>% as.data.frame() %>% rename("." = "Cluster")
+
+AF_cluster <- filtered_AF %>% column_to_rownames(.,  var ="Cell") %>% 
+              merge(., cluster_df, by=0, all=FALSE) %>% 
+              column_to_rownames(., var = "Row.names") %>% 
+              .[c(colnames(clustering_AF_matrix),"Cluster")]
+
+#x-axis has SNPs, y axis has cluster
+superheat(AF_cluster[,1:ncol(AF_cluster)-1], 
+          scale = FALSE,
+          bottom.label.text.angle = 90,
+          membership.rows = AF_cluster$Cluster,
+          bottom.label.size = 0,
+          bottom.label.text.size = 2.5,
+          left.label.text.size = 2.8,
+          left.label.size = .1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          smooth.heat = FALSE)
+
+```
+
+While the SNPs appear to segregate well into distinct clusters, we know that within this dataset there exist 1) doublets, 2) genotypes that are driven by allele dropout (ADO) and/or imperfect sequencing. We'll now start the process of filtering out these difficult-to-classify cells. First, we calculate the number of cells currently assigned to each cluster.
+```{r}
+
+cluster_ncell <- AF_cluster %>% group_by(Cluster) %>% summarise(n_cells = n()) 
+
+cluster_ncell
+
+```
+
+Next, we evenly sample each cluster and create a pool of cells with even representation from each cluster. The number of cells to sample is set by the cluster with the lowest number of cells. 
+```{r}
+
+set.seed(1)
+
+AF_cluster_list <- AF_cluster %>% split(AF_cluster$Cluster) #split dataframe into a list of cells in each cluster
+
+sampled_pool_list <- lapply(AF_cluster_list,  function(df, n = min(cluster_ncell$n_cells)){ #this will be useful later on
+                                          sampled_cells <- df %>% 
+                                                           dplyr::select(!c("Cluster")) %>%
+                                                           .[sample(nrow(.), n), ] 
+                                                           return(sampled_cells)
+                                          }) 
+
+
+sampled_pool <- sampled_pool_list %>% do.call(rbind,.) #combines sampled cells into a single dataframe
+dim(sampled_pool)
+
+```
+
+
+From this pool of cells, we will then generate artificial doublets via randomly sampling 2 cells at a time and averaging their SNP allele frequencies. Below are two functions which let us sample and average SNP profiles. 
+```{r}
+
+#functions to sample and mix cells
+mix_cluster_AF <- function(df){
+                  df <- df
+                  df$mixed <- (df[,1]+ df[,2])/2
+                  names(df)[names(df) == "mixed"] <- paste0(colnames(df[1:2]), collapse="_")
+                      return(df)
+      }
+
+mix_cells <- function(AF_df, n){
+             sample <- sample_n(AF_df,2, replace = FALSE) %>% t() %>% as.data.frame()
+             artificial_mix <- combn(sample, 2, simplify = FALSE)
+             cell_mixes <- lapply(artificial_mix, mix_cluster_AF) %>% 
+                          bind_cols()%>% 
+                          dplyr::select(.,contains("_")) %>% t() %>% as.data.frame()
+             return(cell_mixes)
+}
+
+```
+
+We'll generate enough doublets to make up roughly 5-10% of the total dataset. We start by simulating doublets at 10% of the total data, and then we remove homotypic doublets (i.e. doublets created by two cells from the same cluster).
+```{r}
+
+set.seed(1)
+
+sampled_all <- replicate(n = nrow(filtered_NGT)*.1, mix_cells(sampled_pool), simplify = FALSE) %>% bind_rows() #10% of total data
+
+sampled_all_heterotypic <- sampled_all %>% 
+                            mutate(type = gsub("[^0-9]+", "", rownames(.))) %>% subset(!type == "11" & !type == "22" &
+                                                                                       !type == "33" & !type == "44" &
+                                                                                       !type == "55") %>% dplyr::select(!c(type))
+
+nrow(sampled_all_heterotypic)/nrow(filtered_NGT)*100
+
+```
+
+We then generate a cluster center for the artificial doublets via K-means clustering with a center value of 1. The artificial doublets are then combined with the real clusters generated previously, and we label them as artificial or real cells, respectively. 
+```{r}
+
+set.seed(1)
+
+kmeans_sampled <- kmeans(sampled_all_heterotypic, centers = 1, nstart = 30)
+kmeans_sampled_center <- kmeans_sampled$centers[1,]
+
+kmeans_sampled_clusters <- kmeans_sampled$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+  kmeans_sampled_clusters$Cluster[kmeans_sampled_clusters$Cluster == "1"] <- "artificial"
+
+real_and_mixed_clusters <- rbind(kmeans_sampled_clusters, cell_cluster) #bind mix cluster with real clusters
+real_and_mixed_clusters$Cluster[real_and_mixed_clusters$Cluster == "1" | 
+                                real_and_mixed_clusters$Cluster == "2" |
+                                real_and_mixed_clusters$Cluster == "3" |
+                                real_and_mixed_clusters$Cluster == "4" |
+                                real_and_mixed_clusters$Cluster == "5" |
+                                real_and_mixed_clusters$Cluster == "6" |
+                                real_and_mixed_clusters$Cluster == "7" ] <- "real"
+
+```
+
+We can then generate a UMAP projection of real and artificial cells together. 
+
+```{r}
+
+cells_and_sampled_AF <- rbind(clustering_AF_matrix, sampled_all_heterotypic) #combine real and artificial cells with SNP AFs
+
+umap_SNPs_real_and_mixed <- umap(cells_and_sampled_AF, n_neighbors = sqrt(nrow(cells_and_sampled_AF)))
+
+umap_df_real_and_mixed <- umap_SNPs_real_and_mixed$layout %>%
+                          as.data.frame() %>% 
+                          merge(., real_and_mixed_clusters, by = 0) %>% 
+                          column_to_rownames(., var = "Row.names")
+
+names(umap_df_real_and_mixed)[names(umap_df_real_and_mixed)== "V1"] <- "UMAP1"
+names(umap_df_real_and_mixed)[names(umap_df_real_and_mixed)== "V2"] <- "UMAP2"
+umap_df_real_and_mixed$Cluster <- as.character(umap_df_real_and_mixed$Cluster)
+
+                  umap_df_real_and_mixed %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                   geom_point(aes( fill = Cluster), color = "black",alpha = .4, size =2, shape =21)+
+                   scale_color_manual(values = c("artificial"="black","real"="black"))+  
+                   scale_fill_manual(values = c("artificial"="#EA3546","real"="#00A7E1"))+                
+                   theme_classic()+
+                   theme(axis.title.x = element_text(size = 12),
+                         axis.title.y = element_text(size = 12),
+                         axis.text.x = element_text(size = 10),
+                         axis.text.y = element_text(size = 10),
+                         legend.text = element_text(size = 10),
+                         plot.title = element_text(hjust = 0.5, size = 14))+
+                   labs(x = "UMAP1",
+                        y = "UMAP2")
+
+```
+Next we will calculate the Euclidean distance between reals cells and the artificial center using the pdist function within the `pdist` package. 
+```{r, message=FALSE, warning=FALSE}
+
+dist_C1_mix <- pdist(AF_cluster_list[1]$`1`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C2_mix <- pdist(AF_cluster_list[2]$`2`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C3_mix <- pdist(AF_cluster_list[3]$`3`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C4_mix <- pdist(AF_cluster_list[4]$`4`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C5_mix <- pdist(AF_cluster_list[5]$`5`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C6_mix <- pdist(AF_cluster_list[6]$`6`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+dist_C7_mix <- pdist(AF_cluster_list[7]$`7`[1:ncol(AF_cluster)-1], kmeans_sampled_center) %>% 
+              as.matrix() %>% as.data.frame() %>% rename("V1"= "mix")
+
+rownames(dist_C1_mix) <- rownames(AF_cluster_list[1]$`1`)
+rownames(dist_C2_mix) <- rownames(AF_cluster_list[2]$`2`)
+rownames(dist_C3_mix) <- rownames(AF_cluster_list[3]$`3`)
+rownames(dist_C4_mix) <- rownames(AF_cluster_list[4]$`4`)
+rownames(dist_C5_mix) <- rownames(AF_cluster_list[5]$`5`)
+rownames(dist_C6_mix) <- rownames(AF_cluster_list[6]$`6`)
+rownames(dist_C7_mix) <- rownames(AF_cluster_list[7]$`7`)
+
+distances_cluster_mix <- rbind(dist_C1_mix, dist_C2_mix) %>%
+                         rbind(., dist_C3_mix) %>%
+                         rbind(., dist_C4_mix) %>%
+                         rbind(., dist_C5_mix) %>%
+                         rbind(., dist_C6_mix) %>%
+                         rbind(., dist_C7_mix) 
+
+```
+We'll also calculate the Euclidean distance from real cells to their respective real centers, which we pull from the K-means clustering output. Here we are asking: if a cell is partitioned into a cluster, how similar is that cell's SNP profile to the average SNP profile of that cluster?
+```{r}
+
+C1_mean_AF <- kmeans_AF$centers[1,]
+C2_mean_AF <- kmeans_AF$centers[2,]
+C3_mean_AF <- kmeans_AF$centers[3,]
+C4_mean_AF <- kmeans_AF$centers[4,]
+C5_mean_AF <- kmeans_AF$centers[5,]
+C6_mean_AF <- kmeans_AF$centers[6,]
+C7_mean_AF <- kmeans_AF$centers[7,]
+
+dist_C1_real <- pdist(AF_cluster_list[1]$`1`[1:ncol(AF_cluster)-1], C1_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C2_real <- pdist(AF_cluster_list[2]$`2`[1:ncol(AF_cluster)-1], C2_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C3_real <- pdist(AF_cluster_list[3]$`3`[1:ncol(AF_cluster)-1], C3_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C4_real <- pdist(AF_cluster_list[4]$`4`[1:ncol(AF_cluster)-1], C4_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C5_real <- pdist(AF_cluster_list[5]$`5`[1:ncol(AF_cluster)-1], C5_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C6_real <- pdist(AF_cluster_list[6]$`6`[1:ncol(AF_cluster)-1], C6_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+dist_C7_real <- pdist(AF_cluster_list[7]$`7`[1:ncol(AF_cluster)-1], C7_mean_AF) %>% 
+                as.matrix() %>% as.data.frame() %>% rename("V1"= "real")
+
+rownames(dist_C1_real) <- rownames(AF_cluster_list[1]$`1`)
+rownames(dist_C2_real) <- rownames(AF_cluster_list[2]$`2`)
+rownames(dist_C3_real) <- rownames(AF_cluster_list[3]$`3`)
+rownames(dist_C4_real) <- rownames(AF_cluster_list[4]$`4`)
+rownames(dist_C5_real) <- rownames(AF_cluster_list[5]$`5`)
+rownames(dist_C6_real) <- rownames(AF_cluster_list[6]$`6`)
+rownames(dist_C7_real) <- rownames(AF_cluster_list[7]$`7`)
+
+
+distances_cluster_real <- rbind(dist_C1_real, dist_C2_real) %>%
+                          rbind(., dist_C3_real) %>%
+                          rbind(., dist_C4_real) %>%
+                          rbind(., dist_C5_real) %>%
+                          rbind(., dist_C6_real) %>%
+                          rbind(., dist_C7_real)
+
+```
+
+We then want to calculate how close 95% of completely-genotyped cells are to their respective cluster center. This will be used as a cutoff to filter out cells that fall within this distance to the artificial (mixed) center.
+```{r}
+
+quantile_95 <- quantile(distances_cluster_real$real, probs = c(0.95)) 
+
+quantile_95
+
+```
+
+
+After checking our data, we then want to start the doublet removal process. We'll now select all cells and the the subset of SNPs we previously used for clustering.
+```{r}
+
+#this data frame containing imperfect genotypes will be used as input to filter out putative doublets from the data set in the next few chunks of code.
+imperfect_AF <- filtered_AF %>% 
+              .[,c("Cell",colnames(clustering_AF_matrix))]  
+
+table(is.na(imperfect_AF))
+
+```
+
+Since we ultimately want to get an estimate of the distance from all cells to the real and artificial cluster centers, we need to get rid of NAs for SNPs with missing genotyping information. Below are functions to randomly sample and replace NAs with AF values of 0 (wild type), 50 (heterozygous), or 100 (homozygous).
+```{r}
+
+lets_sample <- function(AF){
+                  SNP_AF <- AF
+                  sampled_AF <- as.data.frame(apply(SNP_AF,2, function(x){
+                                              ifelse((is.na(x)),
+                                              sample(c(0,50,100), 
+                                              replace = TRUE),x)})) 
+                  return(sampled_AF)
+                      }
+
+sample_for_mixing <- function(df, ref, center, quantile){
+                        df_sampled <- lets_sample(AF = df)
+                        df_sampled <- df_sampled[,colnames(ref)]
+                        
+                        distance <- pdist(df_sampled, center) %>% 
+                                          as.matrix() %>% 
+                                          as.data.frame() %>% 
+                                          rename("V1"= "mix_dist") 
+                        
+                        rownames(distance) <- rownames(df_sampled)
+                        
+                        distance_filtered <- distance %>% 
+                                               dplyr::filter(mix_dist > quantile)
+                        
+                        return(distance_filtered)}
+
+```
+
+
+Replicate the process 10 times, and then select the cells that survive the doublet filter through all replicates. The survivors represent the pool of cells that we will classify later on. 
+```{r, message=FALSE, warning=FALSE}
+
+set.seed(1)
+replicated_sampling <- replicate(10, sample_for_mixing(df = (imperfect_AF %>%
+                                                            column_to_rownames(., var = "Cell")),
+                                 ref = clustering_AF_matrix,
+                                 center = kmeans_sampled_center,
+                                 quantile = quantile_95) %>% 
+                                 rownames_to_column(., var = "Cell"))
+
+survivors <- merge(replicated_sampling[,1], replicated_sampling[,2], by = "Cell") %>%
+             merge(., replicated_sampling[,3], by = "Cell") %>%
+             merge(., replicated_sampling[,4], by = "Cell") %>%
+             merge(., replicated_sampling[,5], by = "Cell") %>%
+             merge(., replicated_sampling[,6], by = "Cell") %>%
+             merge(., replicated_sampling[,7], by = "Cell") %>%
+             merge(., replicated_sampling[,8], by = "Cell") %>%
+             merge(., replicated_sampling[,9], by = "Cell") %>%
+             merge(., replicated_sampling[,10], by = "Cell") %>% 
+             column_to_rownames(., var = "Cell")
+
+```
+
+```{r}
+dim(survivors)
+```
+
+In the above code, we filtered out doublets in the total dataset to obtain a pool of cells that to classify later. Before we do that, we need to identify the SNP profile of each cluster, which we'll then use to classify the remaining cells. Current clusters have doublets present, so we still need to filter out doublets in this subset of data. 
+```{r}
+
+clusters_filtered<- cbind(distances_cluster_real, distances_cluster_mix) %>% 
+                    dplyr::filter(mix > quantile_95) %>% #dist to artificial center must be larger than quantile_95
+                    dplyr::filter(mix > real ) #cell must be closer to its own center than to the artificial center
+
+clusters_singlets<- clustering_AF_matrix[rownames(clusters_filtered), colnames(clustering_AF_matrix)]
+
+dim(clusters_singlets)
+```
+
+
+Now we'll recluster the subset of completely genotyped cells with doublets removed. As we did earlier on, we set k=5 since there are 5 unique samples in this multiplexed run. 
+```{r}
+
+set.seed(1)
+
+km_singlets <- kmeans(clusters_singlets, centers = 7, nstart = 30)
+
+umap_singlets <- umap(clusters_singlets, n_neighbors = sqrt(nrow(clusters_singlets))) 
+cell_cluster_singlets <- km_singlets$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+umap_df_singlets <- umap_singlets$layout %>%
+                    as.data.frame() %>% 
+                    merge(., cell_cluster_singlets, by = 0) %>% 
+                    column_to_rownames(., var = "Row.names")
+
+names(umap_df_singlets)[names(umap_df_singlets)== "V1"]<-"UMAP1"
+names(umap_df_singlets)[names(umap_df_singlets)== "V2"]<-"UMAP2"
+umap_df_singlets$Cluster <- as.character(umap_df_singlets$Cluster)
+
+umap_singlets_gg<-  umap_df_singlets %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                    geom_point(aes( fill = Cluster), color = "black",alpha = .5, size =2, shape =21)+
+                    scale_fill_manual(values = rev(c(tol(7))))+
+                    theme_classic()+
+                    theme(plot.title = element_text(hjust = 0.5, size = 14))+
+                    labs(x = "UMAP1",
+                         y = "UMAP2")+
+                    ggtitle("De-doubleted Clusters")
+
+umap_singlets_gg
+
+```
+Again we'll inspect the SNP profile of each cluster
+
+```{r}
+
+singlet_cluster_df <- km_singlets$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+NGT_cluster_singlets <- filtered_NGT %>%
+                        column_to_rownames(.,  var ="Cell") %>% 
+                        merge(.,singlet_cluster_df, by = 0, all =FALSE ) %>%
+                        column_to_rownames(., var = "Row.names") %>% 
+                        .[c(colnames(clusters_singlets),"Cluster")]
+
+#x-axis has SNPs, y-axis has cluster
+superheat(NGT_cluster_singlets[, 1:ncol(NGT_cluster_singlets)-1],
+          scale = FALSE,
+          bottom.label.text.angle = 90,
+          membership.rows = NGT_cluster_singlets$Cluster,
+          bottom.label.size = 0,
+          left.label.text.size = 2.8,
+          left.label.size = .1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          smooth.heat = FALSE)
+
+ordered_singlets <- NGT_cluster_singlets %>% arrange(Cluster)
+
+count(ordered_singlets$Cluster == 1)
+count(ordered_singlets$Cluster == 2)
+count(ordered_singlets$Cluster == 3)
+count(ordered_singlets$Cluster == 4)
+count(ordered_singlets$Cluster == 5)
+count(ordered_singlets$Cluster == 6)
+count(ordered_singlets$Cluster == 7)
+
+```
+Now we want to remove the residual AML cells. We can determine the SNP profile of the AML sample and see if it is present in our data. 
+```{r}
+
+AML_SNP_profile <- filtered_NGT_1[(filtered_NGT_1$`chr21:36231792:C/T` == 1 | 
+                                   filtered_NGT_1$`chr2:209113113:G/A` == 1 | 
+                                   filtered_NGT_1$`chr2:25457242:C/T` == 1 ),] %>%
+                                   dplyr::select(c(Cell, colnames(clustering_AF_matrix))) %>% 
+                                   dplyr::filter(!is.na(.$Cell)) %>%
+                                   column_to_rownames(., var = "Cell") %>% 
+                                   t() %>% as.data.frame() %>%
+                                   apply(.,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "AML_SNP_profile")
+        
+```
+
+We can see that comparing the SNP profile to the heatmap, the AML sample is cluster 5. We will remove cluster 5 from the data. 
+Now subset the data and re-run Kmeans clustering with the data frame consisting of singlets with the AML sample removed
+```{r}
+
+AML_removed_singlets <- NGT_cluster_singlets %>% subset(!Cluster == 5) %>% dplyr::select(!Cluster)
+
+```
+
+Since we have now completely removed the spike-in AML sample, we reduce k to k = 6 for reclustering. 
+```{r}
+
+set.seed(1)
+
+km_singlets_noAML <- kmeans(AML_removed_singlets, centers = 6, nstart = 30)
+
+umap_singlets_noAML <- umap(AML_removed_singlets, n_neighbors = sqrt(nrow(AML_removed_singlets))) 
+cell_cluster_singlets_noAML <- km_singlets_noAML$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+umap_df_singlets_noAML <- umap_singlets_noAML$layout %>%
+                          as.data.frame() %>% 
+                          merge(., cell_cluster_singlets_noAML, by = 0) %>% 
+                          column_to_rownames(., var = "Row.names")
+
+
+names(umap_df_singlets_noAML)[names(umap_df_singlets_noAML)== "V1"]<-"UMAP1"
+names(umap_df_singlets_noAML)[names(umap_df_singlets_noAML)== "V2"]<-"UMAP2"
+umap_df_singlets_noAML$Cluster <- as.character(umap_df_singlets_noAML$Cluster)
+
+umap_singlets_no_AML_gg<-  umap_df_singlets_noAML %>% ggplot(aes(x = UMAP1, y = UMAP2))+
+                           geom_point(aes( fill = Cluster), color = "black",alpha = .9, size =2, shape =21)+
+                           scale_fill_manual(values = rev(c(tol(7))))+
+                           theme_classic()+
+                           theme(plot.title = element_text(hjust = 0.5, size = 14))+
+                           labs(x = "UMAP1",
+                                y = "UMAP2")+
+                           ggtitle("De-doubleted Clusters")
+
+umap_singlets_no_AML_gg
+
+```
+
+```{r}
+
+singlet_cluster_noAML_df <- km_singlets_noAML$cluster %>% as.data.frame() %>% rename(. = "Cluster")
+
+NGT_cluster_singlets_noAML <- filtered_NGT %>%
+                              column_to_rownames(.,  var ="Cell") %>% 
+                              merge(.,singlet_cluster_noAML_df, by = 0, all =FALSE ) %>%
+                              column_to_rownames(., var = "Row.names") %>% 
+                              .[c(colnames(AML_removed_singlets),"Cluster")]
+
+superheat(NGT_cluster_singlets_noAML[, 1:ncol(NGT_cluster_singlets_noAML)-1],
+          scale = FALSE,
+          bottom.label.text.angle = 90,
+          membership.rows = NGT_cluster_singlets_noAML$Cluster,
+          bottom.label.size = 0,
+          bottom.label.text.size = 2.5,
+          left.label.text.size = 2.8,
+          left.label.size = .1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          smooth.heat = FALSE)
+
+ordered_singlets_noAML<- NGT_cluster_singlets_noAML %>% arrange(Cluster)
+
+count(ordered_singlets_noAML$Cluster == 1)
+count(ordered_singlets_noAML$Cluster == 2)
+count(ordered_singlets_noAML$Cluster == 3)
+count(ordered_singlets_noAML$Cluster == 4)
+count(ordered_singlets_noAML$Cluster == 5)
+count(ordered_singlets_noAML$Cluster == 6)
+
+
+    pheatmap(ordered_singlets_noAML[, 1:ncol(ordered_singlets_noAML)-1], 
+             show_rownames = FALSE, 
+             show_colnames = FALSE,
+             cluster_rows = FALSE, 
+             cluster_cols = TRUE, 
+             border_color = NA,
+             legend = FALSE,
+             color = c("#E5DADA","#840032","#002642"))
+
+```
+
+Now we'll prepare the data for classification i.e. matching of cells to clusters based on SNP profiles. 
+```{r}
+
+#pull surviving cells after de-doubleting and subset on the 14 SNPs. 
+NGT_to_classify<- filtered_NGT %>% 
+                  column_to_rownames(., var = "Cell") %>% 
+                  .[rownames(survivors), colnames(clustering_AF_matrix)] %>%
+                  apply(., 1, as.character)
+
+rownames(NGT_to_classify)<- colnames(clustering_AF_matrix)
+
+matching_df<- NGT_to_classify %>% as.data.frame()
+
+#convert data to character
+matching_NGT<- apply(matching_df, 2, as.character) %>% as.data.frame()
+              
+rownames(matching_NGT)<- rownames(matching_df)
+
+#split into multiple dataframes
+matching_NGT_split<- split.default(matching_NGT, c(1:ncol(matching_NGT))) 
+
+#get rid of columns with NAs, as we don't want to penalize cells with missing SNP info during matching
+matching_df_split_noNA<- lapply(matching_NGT_split, na.omit)
+
+```
+
+This function calculates the Hamming distance between each cells SNP profile and the cluster reference profile that is supplied. 
+```{r}
+
+match_cells <- function(cluster, x, names ){
+                        merged<-lapply(x, function(y) merge(y,cluster, by = 0 ))
+                        matching_index<- lapply(merged, function(x){sum(x[,2] != x[,3])})
+                        matched_df<- as.data.frame(do.call(rbind,matching_index))
+                        rownames(matched_df)<- colnames(names)
+               return(matched_df)
+              }
+
+```
+
+Here we prepare the de-doubleted data to determine the most common genotype for each SNP in each cluster. This is done with NGT values (0, 1, 2). 
+```{r}
+
+singlets_AF <- clustering_AF_matrix[rownames(singlet_cluster_noAML_df),] %>% 
+              cbind(., singlet_cluster_noAML_df) %>% 
+              split(.$Cluster) 
+
+C1_singlets <- singlets_AF$`1`[1:ncol(clustering_AF_matrix)]
+C2_singlets <- singlets_AF$`2`[1:ncol(clustering_AF_matrix)]
+C3_singlets <- singlets_AF$`3`[1:ncol(clustering_AF_matrix)]
+C4_singlets <- singlets_AF$`4`[1:ncol(clustering_AF_matrix)]
+C5_singlets <- singlets_AF$`5`[1:ncol(clustering_AF_matrix)]
+C6_singlets <- singlets_AF$`6`[1:ncol(clustering_AF_matrix)]
+
+C1_to_match <- matching_df[,rownames(C1_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C2_to_match <- matching_df[,rownames(C2_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C3_to_match <- matching_df[,rownames(C3_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C4_to_match <- matching_df[,rownames(C4_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C5_to_match <- matching_df[,rownames(C5_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+C6_to_match <- matching_df[,rownames(C6_singlets)] %>% apply(., 2, as.character) %>% as.data.frame()
+
+  rownames(C1_to_match) <- colnames(C1_singlets)
+  rownames(C2_to_match) <- colnames(C2_singlets)
+  rownames(C3_to_match) <- colnames(C3_singlets)
+  rownames(C4_to_match) <- colnames(C4_singlets)
+  rownames(C5_to_match) <- colnames(C5_singlets)
+  rownames(C6_to_match) <- colnames(C6_singlets)
+
+```
+
+Determine the most common genotype for each SNP in each cluster, again using NGT values. 
+```{r, match cells to clusters}
+
+C1_input <- apply(C1_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C1")
+C2_input <- apply(C2_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C2")
+C3_input <- apply(C3_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C3")
+C4_input <- apply(C4_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C4")
+C5_input <- apply(C5_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C5")
+C6_input <- apply(C6_to_match,1,function(x) names(which.max(table(x)))) %>% as.data.frame() %>% rename("." = "C6")
+
+
+input_df<- cbind(C1_input, C2_input) %>%
+           cbind(., C3_input) %>%
+           cbind(., C4_input) %>%
+           cbind(., C5_input) %>% 
+           cbind(., C6_input) %>% t() %>%
+           as.data.frame() %>% 
+           apply(., 2, as.numeric) %>% 
+           as.data.frame()
+
+```
+
+```{r}
+pheatmap(input_df[, 1:ncol(input_df)], 
+         show_rownames = TRUE, 
+         show_colnames = FALSE,
+         cluster_rows = FALSE, 
+         cluster_cols = TRUE, 
+         border_color = "black",
+         legend = FALSE, 
+         gaps_row = c(1,2,3,4),
+         color = c("#E5DADA","#840032","#002642"))
+
+```
+
+
+Match cells to each cluster reference using the `match_cells` function, which requires a cluster reference profile, a list containing SNP profiles for all cells to be classified, and a data frame to supply barcode identities. After running this function over each cluster, each barcode will have a Hamming distance to each cluster.  
+```{r}
+
+C1_matched <- match_cells(cluster = C1_input, x = matching_df_split_noNA, names = matching_NGT)
+C2_matched <- match_cells(cluster = C2_input, x = matching_df_split_noNA, names = matching_NGT)
+C3_matched <- match_cells(cluster = C3_input, x = matching_df_split_noNA, names = matching_NGT)
+C4_matched <- match_cells(cluster = C4_input, x = matching_df_split_noNA, names = matching_NGT)
+C5_matched <- match_cells(cluster = C5_input, x = matching_df_split_noNA, names = matching_NGT)
+C6_matched <- match_cells(cluster = C6_input, x = matching_df_split_noNA, names = matching_NGT)
+
+```
+
+Now we'll calculate the Hamming distance between the clusters themselves. This will ensure that if there are clusters that have highly similar SNP profiles (i.e. Hamming distance <3) we can account for it in the downstream filtering steps. From the heatmap we can see that Cluster 1 and Cluster 2 are highly similar, with a Hamming distance of 1.
+```{r}
+
+cluster_input <- cbind(C1_input, C2_input) %>%
+                 cbind(., C3_input) %>%
+                 cbind(., C4_input) %>%
+                 cbind(., C5_input) %>%   
+                 cbind(., C6_input) %>% 
+                 t() %>% as.data.frame()
+
+cluster_input_hamming <- as.data.frame(as.matrix(hammingdists(cluster_input)))
+
+rownames(cluster_input_hamming)<- rownames(cluster_input)
+colnames(cluster_input_hamming)<- rownames(cluster_input)
+
+superheat(cluster_input_hamming,
+          scale = FALSE,
+          left.label.text.size = 3,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE, 
+          left.label.size = .12,
+          bottom.label.size = .09,
+          bottom.label.text.size = 3,
+          legend = FALSE,
+          X.text = round(as.matrix(cluster_input_hamming), 1))
+
+```
+
+The Hamming distance data are then merged into a single dataframe. We also want to calculate the amount of missing SNPs in each cell that was included in cell matching; this will enable us to calculate the number of possible SNP matches between cell and cluster vs. the number of matches we observed. 
+```{r}
+
+available_info_singlets <- filtered_NGT %>% 
+                           column_to_rownames(., var = "Cell") %>% 
+                          .[rownames(survivors), colnames(input_df)] %>%
+                           mutate(prop_avail_info = (((ncol(.) - rowSums(is.na(.)))/ncol(.)))) %>%
+                           dplyr::select(c(prop_avail_info))
+
+C1_info <- C1_matched %>% rename("V1"= "C1")
+C2_info <- C2_matched %>% rename("V1"= "C2")
+C3_info <- C3_matched %>% rename("V1"= "C3")
+C4_info <- C4_matched %>% rename("V1"= "C4")
+C5_info <- C5_matched %>% rename("V1"= "C5")
+C6_info <- C6_matched %>% rename("V1"= "C6")
+
+match_master <- cbind(C1_info, C2_info) %>%
+               cbind(., C3_info) %>%
+               cbind(., C4_info) %>%
+               cbind(., C5_info) %>% 
+               cbind(., C6_info) %>% 
+               cbind(.,available_info_singlets) %>%
+                  mutate(possible_matches = (prop_avail_info * ncol(input_df))) %>%
+                  mutate(num_missing_SNPs = (ncol(input_df) - possible_matches)) %>%
+                  mutate(C1_abs = (possible_matches - C1)) %>%
+                  mutate(C2_abs = (possible_matches - C2)) %>%
+                  mutate(C3_abs = (possible_matches - C3)) %>%
+                  mutate(C4_abs = (possible_matches - C4)) %>%
+                  mutate(C5_abs = (possible_matches - C5)) %>%
+                  mutate(C6_abs = (possible_matches - C6)) 
+
+```
+
+Cells are then assigned to clusters based on the available SNP information matching perfectly to one cluster, while being a Hamming distance of ≥3 to every other cluster. For clusters which have a Hamming distance <3 to one another (i.e. Cluster 1 and Cluster 2), we reduce the classification filter to accomodate this. 
+```{r}
+
+C1_filtered<- match_master %>% 
+              dplyr::filter(C1_abs >= possible_matches)  %>% #must match perfectly to cluster 1
+              dplyr::filter((C1_abs - C2_abs) >= 1 & #must be Hamming distance of >=1 to cluster 2
+                            (C1_abs - C3_abs) >= 3 & #must be Hamming distance of >=3 to cluster 3-6
+                            (C1_abs - C4_abs) >= 3 &
+                            (C1_abs - C5_abs) >= 3 &
+                            (C1_abs - C6_abs) >= 3)
+                          
+C2_filtered<- match_master %>% 
+              dplyr::filter(C2_abs >= possible_matches)  %>%
+              dplyr::filter((C2_abs - C1_abs) >= 1 & 
+                            (C2_abs - C3_abs) >= 3 & 
+                            (C2_abs - C4_abs) >= 3 &
+                            (C2_abs - C5_abs) >= 3 &
+                            (C2_abs - C6_abs) >= 3)
+
+C3_filtered<- match_master %>% 
+              dplyr::filter(C3_abs >= possible_matches)  %>%
+              dplyr::filter((C3_abs - C1_abs) >= 3 & 
+                            (C3_abs - C2_abs) >= 3 & 
+                            (C3_abs - C4_abs) >= 3 &
+                            (C3_abs - C5_abs) >= 3 &
+                            (C3_abs - C6_abs) >= 3)
+                            
+C4_filtered<- match_master %>% 
+              dplyr::filter(C4_abs >= possible_matches)  %>%
+              dplyr::filter((C4_abs - C1_abs) >= 3 & 
+                            (C4_abs - C2_abs) >= 3 & 
+                            (C4_abs - C3_abs) >= 3 &
+                            (C4_abs - C5_abs) >= 3 &
+                            (C4_abs - C6_abs) >= 3)
+                            
+C5_filtered<- match_master %>% 
+              dplyr::filter(C5_abs >= possible_matches)  %>%
+              dplyr::filter((C5_abs - C1_abs) >= 3 & 
+                            (C5_abs - C2_abs) >= 3 & 
+                            (C5_abs - C3_abs) >= 3 &
+                            (C5_abs - C4_abs) >= 3 &
+                            (C5_abs - C6_abs) >= 3)
+
+C6_filtered<- match_master %>% 
+              dplyr::filter(C6_abs >= possible_matches)  %>%
+              dplyr::filter((C6_abs - C1_abs) >= 3 & 
+                            (C6_abs - C2_abs) >= 3 & 
+                            (C6_abs - C3_abs) >= 3 &
+                            (C6_abs - C4_abs) >= 3 &
+                            (C6_abs - C5_abs) >= 3)
+                            
+```
+
+Subset the starting NGT data (`filtered_NGT`) for cells classified to each cluster. 
+```{r, subset final cells per cluster}
+
+C1_final<-subset(filtered_NGT, Cell %in% rownames(C1_filtered),)
+C2_final<-subset(filtered_NGT, Cell %in% rownames(C2_filtered),)
+C3_final<-subset(filtered_NGT, Cell %in% rownames(C3_filtered),)
+C4_final<-subset(filtered_NGT, Cell %in% rownames(C4_filtered),)
+C5_final<-subset(filtered_NGT, Cell %in% rownames(C5_filtered),)
+C6_final<-subset(filtered_NGT, Cell %in% rownames(C6_filtered),)
+
+```
+
+```{r}
+
+nrow(C1_final)
+nrow(C2_final)
+nrow(C3_final)
+nrow(C4_final)
+nrow(C5_final)
+nrow(C6_final)
+
+```
+
+Now that we've binned cells into clusters, we'll detect mutations present in each of the clusters. Below is a function to annotate variants, and calculate VAF + genotyping call rate using a "Cx_final" NGT matrix as input. 
+```{r}
+
+detect_mutations <- function(NGT) { 
+                 mutations <- data.frame(Bulk_VAF = apply(NGT %>% 
+                              dplyr::select(!.data$Cell), MARGIN = 2, function(x) {
+                              (sum(x, na.rm = TRUE)/(sum(!is.na(x)) * 2)) * 100
+                              }), GT_call_rate = apply(NGT %>% dplyr::select(!.data$Cell), 
+                              MARGIN = 2, function(x) {100 - (sum(is.na(x))/length(x) * 100)
+                              }), id = colnames(NGT)[colnames(NGT) != "Cell"]) %>% 
+                              dplyr::inner_join(out, by = "id") %>%
+                             dplyr::select(Bulk_VAF, GT_call_rate, AA, id, CONSEQUENCE)
+              return(mutations)
+  }
+
+```
+
+```{r}
+
+Cluster_check_1_matched <- detect_mutations(C1_final)
+
+Cluster_check_filter_1_matched<- Cluster_check_1_matched %>%
+                                 dplyr::filter(GT_call_rate > 10) %>%
+                                 dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_1_matched)[names(Cluster_check_filter_1_matched) == "Bulk_VAF"]<-"C1_VAF"
+
+```
+
+```{r}
+Cluster_check_2_matched <- detect_mutations(C2_final)
+
+Cluster_check_filter_2_matched<- Cluster_check_2_matched %>%
+                                 dplyr::filter(GT_call_rate > 10) %>%
+                                 dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_2_matched)[names(Cluster_check_filter_2_matched) == "Bulk_VAF"]<-"C2_VAF"
+
+```
+
+```{r}
+Cluster_check_3_matched <- detect_mutations(C3_final)
+
+Cluster_check_filter_3_matched<- Cluster_check_3_matched %>%
+                                 dplyr::filter(GT_call_rate > 10) %>%
+                                 dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_3_matched)[names(Cluster_check_filter_3_matched) == "Bulk_VAF"]<-"C3_VAF"
+
+```
+
+```{r}
+Cluster_check_4_matched <- detect_mutations(C4_final)
+
+Cluster_check_filter_4_matched<- Cluster_check_4_matched %>%
+                                 dplyr::filter(GT_call_rate > 10) %>%
+                                 dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_4_matched)[names(Cluster_check_filter_4_matched) == "Bulk_VAF"]<-"C4_VAF"
+
+```
+
+```{r}
+
+Cluster_check_5_matched <- detect_mutations(C5_final)
+
+Cluster_check_filter_5_matched <- Cluster_check_5_matched %>%
+                                  dplyr::filter(GT_call_rate > 10) %>%
+                                  dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_5_matched)[names(Cluster_check_filter_5_matched) == "Bulk_VAF"]<-"C5_VAF"
+
+```
+
+```{r}
+
+Cluster_check_6_matched <- detect_mutations(C6_final)
+
+Cluster_check_filter_6_matched <- Cluster_check_6_matched %>%
+                                  dplyr::filter(GT_call_rate > 10) %>%
+                                  dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_6_matched)[names(Cluster_check_filter_6_matched) == "Bulk_VAF"]<-"C6_VAF"
+
+```
+
+Then we'll merge annotated variant dataframes for all clusters, and search for mutations that were detected by bulk NGS at any timepoint (diagnosis, remission, and relapse (if applicable)). 
+```{r}
+
+ref_mut <- final_mutation_info %>% dplyr::select(c("id","AA"))
+
+clusters_for_hm_matched<- merge(ref_mut,Cluster_check_filter_1_matched, by = "id", all = T ) %>%
+                  merge(., Cluster_check_filter_2_matched, by = "id", all = T) %>%
+                  merge(., Cluster_check_filter_3_matched, by = "id", all = T) %>%
+                  merge(., Cluster_check_filter_4_matched, by = "id", all = T) %>%
+                  merge(., Cluster_check_filter_5_matched, by = "id", all = T) %>%
+                  merge(., Cluster_check_filter_6_matched, by = "id", all = T) %>%
+                  dplyr::filter(AA == "TP53.R273H" |   
+                                AA == "NRAS.G12D" | 
+                                AA == "DNMT3A.V636L"| 
+                                AA == "NRAS.G12C"|
+                                AA == "DNMT3A.R882C"| 
+                                AA == "RUNX1.R166G"| 
+                                AA == "SRSF2.P95H"|
+                                AA == "FLT3.D835Y"| 
+                                AA == "RUNX1.R166Q"| 
+                                AA == "IDH2.R140Q"| 
+                                AA == "SRSF2.P95L"| 
+                                AA == "JAK2.V617F"| 
+                                AA == "SF3B1.K666T"|
+                                AA == "RUNX1.R162G"| 
+                                AA == "NPM1.287"| 
+                                AA == "DNMT3A.592"| 
+                                AA == "DNMT3A.R688C"|
+                                AA == "NRAS.Q61H"| 
+                                AA == "SETBP1.D868N")%>%
+                  column_to_rownames(., var = "AA") %>%
+                  dplyr::select(!c("id"))
+                  
+clusters_for_hm_matched[is.na(clusters_for_hm_matched)]<- 0
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C1_VAF"]<- "Cluster 1"
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C2_VAF"]<- "Cluster 2"
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C3_VAF"]<- "Cluster 3"
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C4_VAF"]<- "Cluster 4"
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C5_VAF"]<- "Cluster 5"
+names(clusters_for_hm_matched)[names(clusters_for_hm_matched) == "C6_VAF"]<- "Cluster 6"
+
+clusters_for_hm_matched
+
+```
+
+Take a look at which mutations were present in which clusters. 
+```{r}
+
+pheatmap(as.matrix(clusters_for_hm_matched), 
+cluster_rows = TRUE, 
+cluster_cols = FALSE,
+color = inferno(8),
+breaks = c(0, 0.5, 1, 10, 20, 30, 40,50, 60),
+display_numbers = TRUE, 
+treeheight_row = 0,
+fontsize_number = 10, 
+number_color = "white", 
+fontsize_col = 10, 
+fontsize_row = 10)
+
+```
+
+Tally number of cells classified in each cluster
+```{r}
+
+ncells_C1<- C1_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_1")
+ncells_C2<- C2_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_2")
+ncells_C3<- C3_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_3")
+ncells_C4<- C4_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_4")
+ncells_C5<- C5_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_5")
+ncells_C6<- C6_filtered %>% nrow() %>% as.data.frame() %>% rename("." = "Cluster_6")
+
+
+ncells<- cbind(ncells_C1, ncells_C2) %>%
+          cbind(., ncells_C3) %>%
+          cbind(., ncells_C4) %>%
+          cbind(., ncells_C5) %>% 
+          cbind(., ncells_C6) %>%
+          reshape2::melt(.)
+
+ncells
+
+```
+Calculate the proportion of cells successfully classified. The denominator here is the number of cells remaining after removing the majority of the spike-in AML sample. 
+```{r}
+
+percent_recovery <- sum(ncells$value)/nrow(filtered_NGT)*100
+
+percent_recovery
+
+```
+
+Cluster 3 (NPM1-mut) is the only sample that is post-HSCT. The only non-mutated sample present is cluster 6, which we can infer to be the HSCT donor sample. 
+```{r}
+
+# sample_1 <- subset(filtered_NGT, Cell %in% C1_final$Cell)
+# sample_2 <- subset(filtered_NGT, Cell %in% C2_final$Cell)
+# sample_3 <- subset(filtered_NGT, Cell %in% c(C3_final$Cell, C6_final$Cell))
+# sample_4 <- subset(filtered_NGT, Cell %in% C4_final$Cell)
+# sample_5 <- subset(filtered_NGT, Cell %in% C5_final$Cell)
+
+```
+
+
+Data are exported as RDS files which are used for downstream clonal + protein analyses. Please note that the sample naming during the demulitplexing may differ from other scripts in this project. The naming system (Cluster 1-5) in this file was set by the K-means clustering algorithm, and the samples were renamed during subsequent processing/plotting according to how many cells were recovered (i.e. S1 has highest cell number, S5 has lowest). 
+```{r}
+ 
+  # write_rds(sample_1, file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD1_v2_S1.rds")
+  # write_rds(sample_2, file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD1_v2_S2.rds")
+  # write_rds(sample_3, file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD1_v2_S3.rds")
+  # write_rds(sample_4, file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD1_v2_S4.rds")
+  # write_rds(sample_5, file = "/Users/robinst1/Desktop/MSKCC/Levine_Lab/Data/R/scDNA_analysis/WX/MRD_Manuscript/WX_MRD1_v2_S5.rds")
+
+```
+
+For plotting purposes later, we'll combine the donor + host samples and recalulate mutation VAF. This is necessary if the goal is to compare the single cell VAF to bulk VAF. 
+```{r}
+
+C3_C6_final<-subset(filtered_NGT, Cell %in% c(rownames(C3_filtered), rownames(C6_filtered)),)
+
+Cluster_check_C3_C6_matched <- detect_mutations(C3_C6_final)
+
+Cluster_check_filter_C3_C6_matched <- Cluster_check_C3_C6_matched %>%
+                                  dplyr::filter(GT_call_rate > 10) %>%
+                                  dplyr::select(Bulk_VAF, id)
+
+names(Cluster_check_filter_C3_C6_matched)[names(Cluster_check_filter_C3_C6_matched) == "Bulk_VAF"]<-"C3_C6_VAF"
+
+
+```
+
+```{r}
+
+clusters_for_hm_matched_recalculated<- merge(ref_mut,Cluster_check_filter_1_matched, by = "id", all = T ) %>%
+                                        merge(., Cluster_check_filter_2_matched, by = "id", all = T) %>%
+                                        merge(., Cluster_check_filter_4_matched, by = "id", all = T) %>%
+                                        merge(., Cluster_check_filter_5_matched, by = "id", all = T) %>%
+                                        merge(., Cluster_check_filter_C3_C6_matched, by = "id", all = T) %>%
+                                        dplyr::filter(AA == "TP53.R273H" |   AA == "NRAS.G12D" | AA == "DNMT3A.V636L"| AA == "NRAS.G12C"|
+                                                      AA == "DNMT3A.R882C" | AA == "RUNX1.R166G"| AA == "SRSF2.P95H"|
+                                                      AA == "FLT3.D835Y"| AA == "RUNX1.R166Q"| 
+                                                      AA == "IDH2.R140Q"| AA == "SRSF2.P95L"| AA == "JAK2.V617F"| AA == "SF3B1.K666T"|
+                                                      AA == "RUNX1.R162G"| AA == "NPM1.287"| AA == "DNMT3A.592"| AA == "DNMT3A.R688C"|
+                                                      AA == "NRAS.Q61H"| AA == "SETBP1.D868N")%>%
+                                        column_to_rownames(., var = "AA") %>%
+                                        dplyr::select(!c("id"))
+                  
+
+clusters_for_hm_matched_recalculated[is.na(clusters_for_hm_matched_recalculated)]<- 0
+names(clusters_for_hm_matched_recalculated)[names(clusters_for_hm_matched_recalculated) == "C1_VAF"]<- "Cluster 1"
+names(clusters_for_hm_matched_recalculated)[names(clusters_for_hm_matched_recalculated) == "C2_VAF"]<- "Cluster 2"
+names(clusters_for_hm_matched_recalculated)[names(clusters_for_hm_matched_recalculated) == "C4_VAF"]<- "Cluster 4"
+names(clusters_for_hm_matched_recalculated)[names(clusters_for_hm_matched_recalculated) == "C5_VAF"]<- "Cluster 5"
+names(clusters_for_hm_matched_recalculated)[names(clusters_for_hm_matched_recalculated) == "C3_C6_VAF"]<- "Cluster 3_6"
+
+```
+
+This table which contains mutation, sample, and VAF info is exported, annotated in excel, and used for plotting in the "scMRD_decon_plots" script. 
+```{r}
+
+clusters_for_decon <- clusters_for_hm_matched_recalculated %>% rownames_to_column(., var = "Mutations") %>%
+                       reshape2::melt(.) %>% 
+                       mutate(variable = str_replace(variable, "Cluster", "Sample")) %>% 
+                       rename(variable = "Sample") %>% rename(value = "VAF")
+
+head(clusters_for_decon)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
