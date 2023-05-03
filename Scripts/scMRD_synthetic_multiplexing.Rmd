@@ -5,7 +5,7 @@ date: "2023-05-02"
 output: html_document
 ---
 
-Here you'll find code we used to conduct a synthetic multiplexing control experiment. Samples A-E are from AML samples that were sequenced via the Tapestri scDNA+protein platform independently (unsorted and non-multiplexed). Each sample was processed separately to assess clonal architecture (see "scMRD_clonal_analysis_syth_mult" for details on this) and a single clone from each sample was extracted. 
+Here you'll find code we used to conduct a synthetic multiplexing control experiment. Samples A-E are from AML samples that were sequenced via the Tapestri scDNA+protein platform independently (unsorted and non-multiplexed). Each sample was processed separately to assess clonal architecture (see "scMRD_preprocessing_synthetic_multiplexing" for details on this) and a single clone from each sample was extracted. 
 ```{r, message=FALSE}
 
 library(tidyverse)
