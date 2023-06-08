@@ -18,7 +18,7 @@ timepoints <- c(0,180,210,330)
 
 #DNMT3A.R882H, NPM1c, DNMT3A.R736C, JAK2.V617F
 frac.table <- matrix(c(37, 25, 00, 00,
-                       35, 0.000000000000000001, 03, 00,
+                       35, 0.000000000000000001, 03,  0.000000000000000001, #set VAF of non-detected mutations to small value, rather than 0
                        39, 05, 04, 02,
                        23, 11, 00, 00),
                        ncol=length(timepoints))
